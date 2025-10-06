@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Туристические маршруты по Байкалу и Иркутской области</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- Подключение Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    #map { height: 90vh; width: 100%; }
+  </style>
+</head>
+<body>
+  <h1>Маршруты и точки интереса</h1>
+  <div id="map"></div>
+
+  <!-- Подключение Leaflet JS -->
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <!-- Для загрузки GeoJSON файла, используем fetch -->
+  <script>
+    // Инициализация карты
+    const map = L.map('map').setView([52.05, 105.0], 7); // Центр Байкала или области
+    
+    // Добавление базовой карты (OpenStreetMap)
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Функция для добавления GeoJSON на карту
+    function addGeoJSONLayer(geojsonUrl, styleOptions={}, onEachFeature=null, pointToLayer=null) {
+      fetch(geojsonUrl)
+        .then(response => response.json())
+        .then(data => {
+          L.geoJSON(data, {
+            style: styleOptions,
+            onEachFeature: onEachFeature,
+			pointToLayer: pointToLayer
+          }).addTo(map);
+        })
+        .catch(error => console.error('Ошибка загрузки GeoJSON:', error));
+    }
+
+    // Добавим маршруты и остановки
+    // Например, для Байкальского района
+    addGeoJSONLayer('routes_Baikal.geojson', {color: 'blue', weight: 3});
+    addGeoJSONLayer('stops_Baikal.geojson', {color: 'red'}, 
+	null,
+	feature => {
+	  // Создаем маркер для каждой точки
+	  const coordinates = feature.geometry.coordinates;
+	  var marker = L.marker([coordinates[1], coordinates[0]],{
+		disableClickPropagation: true
+	  });
+	  const props = feature.properties || {};
+	  const name = props.Name || 'Остановка';
+	  const popupContent = `<strong>${name}</strong>`;
+	  marker.bindPopup(popupContent);
+	  return marker;
+	}
+	);
+	// Аналогично можно для Иркутской области
+    addGeoJSONLayer('routes_Irk_obl.geojson', {color: 'green', weight: 3});
+  </script>
+</body>
+</html>
