@@ -1,7 +1,8 @@
 для запуска использовать из директории проекта:
 
-python -m http.server
+python app.pt
 
 доступ из браузера по:
 
-http://localhost:8000/index.html
+http://localhost:8050
+
