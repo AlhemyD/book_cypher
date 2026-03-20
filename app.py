@@ -455,23 +455,24 @@ def display_page(clickData, route_id, pathname, n_clicks):
     attraction_id = None
     
     # Если нажата кнопка "Назад", показываем главную страницу
-    if ctx.triggered:
-        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
-        if triggered_id == "back-to-main-btn":
-            if pathname.split("?")==1 and route_id is not None:
-                return {'display':'block'}, {'display':'none'}, None, f"/?route_id={route_id}"
-            else:
-                return {'display':'block'}, {'display':'none'}, None, "/"
-        elif triggered_id == "map-graph":
-            if clickData:
-                point = clickData.get('points',[{}])[0]
+    #if ctx.triggered:
+    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if triggered_id == "back-to-main-btn":
+        if pathname.split("?")==1 and route_id is not None:
+            return {'display':'block'}, {'display':'none'}, None, f"/?route_id={route_id}"
+        else:
+            return {'display':'block'}, {'display':'none'}, None, "/"
+    if triggered_id == "map-graph":
+        if clickData:
+            point = clickData.get('points',[{}])[0]
 
-                # Проверяем, что клик был по достопримечательности (у нее есть ID)
-                attraction_id = point.get('customdata')
-                
-                #if attraction_id and isinstance(attraction_id, int):
+            # Проверяем, что клик был по достопримечательности (у нее есть ID)
+            attraction_id = point.get('customdata')
+            
+            if attraction_id and isinstance(attraction_id, int):
                 pathname = f"/attraction/{attraction_id}"
-                    #return {'display':'none'}, {'display':'block'}, dash.no_update, f"/attraction/{attraction_id}"
+                #return {'display':'none'}, {'display':'block'}, None, f"/attraction/{attraction_id}"
+                    
             
     
     
