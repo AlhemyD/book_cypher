@@ -417,44 +417,78 @@ def update_map_and_info(selected_route_id, geo_data):
              
     return fig, info_html
 
-
+### Колбэк для навигации по клику на карту (меняет URL)
+##@app.callback(
+##    Output('url', 'pathname'),
+##    Input('map-graph', 'clickData'),
+##    Input('route-dropdown','value'),
+##    prevent_initial_call=True
+##)
+##def navigate_on_click(clickData, route_id):
+##    if clickData:
+##        point = clickData.get('points', [{}])[0]
+##        
+##        # Проверяем, что клик был по достопримечательности (у нее есть ID)
+##        attraction_id = point.get('customdata')
+##        
+##        if attraction_id and isinstance(attraction_id, int):
+##            return f"/attraction/{attraction_id}"
+##            
+##    return dash.no_update
 
 # Главный колбэк: переключение страниц и генерация контента
 @app.callback(
     Output('main-page-layout', 'style'),
     Output('attraction-page-layout', 'style'),
     Output('attraction-content-holder', 'children'),
+    Output('url', 'pathname'),
+    Input('map-graph', 'clickData'),
+    Input('route-dropdown','value'),
     Input('url', 'pathname'),
     Input('back-to-main-btn', 'n_clicks'),
+    prevent_initial_call=True
 )
-def display_page(pathname, n_clicks):
+def display_page(clickData, route_id, pathname, n_clicks):
     """Управляет видимостью страниц и генерирует контент для страницы достопримечательности."""
 
     ctx = callback_context
+    attraction_id = None
     
     # Если нажата кнопка "Назад", показываем главную страницу
     if ctx.triggered:
         triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
         if triggered_id == "back-to-main-btn":
-            return {'display':'block'}, {'display':'none'}, None
+            if pathname.split("?")==1 and route_id is not None:
+                return {'display':'block'}, {'display':'none'}, None, f"/?route_id={route_id}"
+            else:
+                return {'display':'block'}, {'display':'none'}, None, "/"
+        elif triggered_id == "map-graph":
+            if clickData:
+                point = clickData.get('points',[{}])[0]
+
+                # Проверяем, что клик был по достопримечательности (у нее есть ID)
+                attraction_id = point.get('customdata')
+                
+                #if attraction_id and isinstance(attraction_id, int):
+                pathname = f"/attraction/{attraction_id}"
+                    #return {'display':'none'}, {'display':'block'}, dash.no_update, f"/attraction/{attraction_id}"
+            
     
     
     # Если URL пустой или '/', показываем главную страницу
     if pathname is None or pathname == '/' or pathname == '':
-        return {'display': 'block'}, {'display': 'none'}, None
+        return {'display': 'block'}, {'display': 'none'}, None, "/"
 
     # Если URL начинается с '/attraction/', пытаемся показать страницу достопримечательности
     if pathname.startswith('/attraction/'):
         
         # Извлекаем ID из URL (поддержка /attraction/3)
         path_parts = pathname.split('/')
-        attraction_id = None
+        
         
         if len(path_parts) == 3 and path_parts[-1].isdigit():
             attraction_id = int(path_parts[-1])
         
-        # TODO: Добавить поддержку attraction?attraction_id=3 если потребуется
-
         if attraction_id is not None:
             
             try:
@@ -474,7 +508,7 @@ def display_page(pathname, n_clicks):
                 
                 if attr_df.empty:
                     error_msg = html.Div("Достопримечательность не найдена.", style={'color': 'red'})
-                    return {'display': 'none'}, {'display': 'block'}, error_msg
+                    return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
                 
                 row_attr = attr_df.iloc[0]
                 
@@ -607,35 +641,19 @@ def display_page(pathname, n_clicks):
                     ])
                 ])
                 
-                return {'display': 'none'}, {'display': 'block'}, full_attraction_page_html
+                return {'display': 'none'}, {'display': 'block'}, full_attraction_page_html, f"/attraction/{attraction_id}"
 
             except Error as e:
                 error_msg = html.Div(f"Ошибка базы данных: {e}", style={'color': 'red'})
-                return {'display': 'none'}, {'display': 'block'}, error_msg
+                return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
             finally:
                 if conn.is_connected():
                     conn.close()
     
     # Если URL не распознан, показываем главную страницу (или можно показать 404)
-    return {'display': 'block'}, {'display': 'none'}, None
+    return {'display': 'block'}, {'display': 'none'}, None, "/"
 
-# Колбэк для навигации по клику на карту (меняет URL)
-@app.callback(
-    Output('url', 'pathname'),
-    Input('map-graph', 'clickData'),
-    prevent_initial_call=True
-)
-def navigate_on_click(clickData):
-    if clickData:
-        point = clickData.get('points', [{}])[0]
-        
-        # Проверяем, что клик был по достопримечательности (у нее есть ID)
-        attraction_id = point.get('customdata')
-        
-        if attraction_id and isinstance(attraction_id, int):
-            return f"/attraction/{attraction_id}"
-            
-    return dash.no_update
+
 
             
 
