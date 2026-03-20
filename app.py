@@ -6,6 +6,29 @@ import mysql.connector
 from mysql.connector import Error
 import urllib.parse
 
+def bring_address(cursor, admin_location):      
+    cursor.execute(f"SELECT * FROM admin_location WHERE Admin_Location_ID = {admin_location};")
+    location = cursor.fetchone()
+    if not location:
+        return None
+    full_path = []
+    current_id = location["Admin_Location_ID"]
+    while True:
+        ""
+        select_parent_query = f"""SELECT * FROM Admin_Location WHERE Admin_Location_ID = {current_id}"""
+        cursor.execute(select_parent_query)
+        loc_data = cursor.fetchone()
+        full_path.append(loc_data['Name'])
+                
+        if loc_data['Parent_ID'] is None or loc_data['Parent_ID'] == '':
+            break
+                    
+        current_id = loc_data['Parent_ID']
+            
+    # Инвертируем порядок элементов, чтобы получился правильный адрес сверху-вниз
+    full_path.reverse()
+    return ', '.join(full_path)
+
 # --- НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К БД ---
 DB_CONFIG = {
     'host': 'localhost',
@@ -23,6 +46,18 @@ app.layout = html.Div([
     dcc.Location(id='url', refresh=False), # Основной компонент навигации
     html.Div(id='main-page-layout', style={'display':'block'}, children=
     [html.H1("Визуализация туристических маршрутов", style={'textAlign': 'center'}),
+
+     # НОВЫЙ БЛОК: Фильтр по локации
+    html.Div([
+        html.Label("Выберите административную локацию:"),
+        dcc.Dropdown(
+            id='location-filter',
+            placeholder="Выберите локацию...",
+            clearable=False,
+            options=[], # Опции загрузятся из БД
+            value=1 # По умолчанию ID 1 (Россия)
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '20px'}),
     
     html.Div([
         html.Label("Выберите маршрут:"),
@@ -42,6 +77,7 @@ app.layout = html.Div([
         html.Div(id='route-info-container', style={'width': '28%', 'display': 'inline-block', 'padding': '20px', 'box-sizing': 'border-box'}),
     ]),
     # Скрытые элементы для хранения данных и работы с URL
+     dcc.Store(id='routes-meta-store'), 
     dcc.Store(id='routes-data-store'), # Здесь хранятся только координаты точек
 ]),
     # 3. БЛОК СТРАНИЦЫ ДОСТОПРИМЕЧАТЕЛЬНОСТИ (скрыт по умолчанию)
@@ -55,6 +91,29 @@ app.layout = html.Div([
 ])
 
 # --- КОЛБЭКИ (ЛОГИКА) ---
+
+# 0. Загружаем список локаций для фильтра
+@app.callback(
+    Output('location-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_locations(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        query = """
+        SELECT Admin_Location_ID AS value, Name AS label
+        FROM Admin_Location 
+        ORDER BY Level, Name;
+        """
+        df = pd.read_sql(query, conn)
+        df['label'] = df['value'].apply(lambda x: bring_address(cursor = conn.cursor(dictionary=True), admin_location = x))
+        return df.to_dict('records') if not df.empty else []
+    except Error as e:
+        print(f"Ошибка при загрузке локаций: {e}")
+        return []
+    finally:
+        if conn.is_connected():
+            conn.close()
 
 # 1. Загружаем ГЕО-данные (координаты точек) для всех маршрутов
 @app.callback(
@@ -112,22 +171,72 @@ def load_routes_data(_):
         if conn.is_connected():
             conn.close()
 
-# 2. Заполняем выпадающий список названиями маршрутов
+# 2. Загружаем данные о маршрутах И фильтруем их по выбранной локации
 @app.callback(
     Output('route-dropdown', 'options'),
-    Input('routes-data-store', 'data')
+    Output('routes-meta-store', 'data'), # Сохраняем отфильтрованные данные
+    Input('location-filter', 'value'),
+    Input('routes-meta-store', 'data'), # Используем как State, чтобы не загружать заново
 )
-def populate_dropdown(data):
-    if not data:
-        return []
+def filter_routes_by_location(selected_location_id, stored_routes_data):
+    # Если данные уже есть в хранилище, используем их, чтобы не делать лишний запрос
+    if stored_routes_data and selected_location_id:
+        df_routes = pd.DataFrame(stored_routes_data)
+    else:
+        # Если данных нет, загружаем их из БД
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            query = "SELECT Route_ID, Name, Admin_Location_ID FROM Routes;"
+            df_routes = pd.read_sql(query, conn)
+        except Error as e:
+            print(f"Ошибка при загрузке маршрутов: {e}")
+            return [], None
     
-    df = pd.DataFrame(data)
-    unique_routes = df[['Route_ID', 'Route_Name']].drop_duplicates()
+    if df_routes.empty:
+        return [], None
+
+    # --- ФИЛЬТРАЦИЯ ---
+    # Находим саму выбранную локацию и всех её "детей" (подчиненные районы, села)
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        
+        # Запрос для поиска всех подчиненных локаций (включая саму себя)
+        query_locations = """
+        WITH RECURSIVE loc_tree AS (
+            SELECT Admin_Location_ID FROM Admin_Location WHERE Admin_Location_ID = %s
+            UNION ALL
+            SELECT al.Admin_Location_ID 
+            FROM Admin_Location al
+            INNER JOIN loc_tree lt ON al.Parent_ID = lt.Admin_Location_ID
+        )
+        SELECT Admin_Location_ID FROM loc_tree;
+        """
+        loc_df = pd.read_sql(query_locations, conn, params=(selected_location_id,))
+        
+        # Если запрос к локациям прошел успешно, фильтруем маршруты
+        if not loc_df.empty:
+            valid_location_ids = loc_df['Admin_Location_ID'].tolist()
+            
+            # Фильтруем маршруты, у которых Admin_Location_ID есть в списке найденных локаций
+            filtered_routes = df_routes[df_routes['Admin_Location_ID'].isin(valid_location_ids)]
+            
+            options = [
+                {'label': row['Name'], 'value': row['Route_ID']}
+                for _, row in filtered_routes.iterrows()
+            ]
+            
+            return options, filtered_routes.to_dict('records')
+            
+    except Error as e:
+        print(f"Ошибка при фильтрации по локации: {e}")
     
-    return [
-        {'label': row['Route_Name'], 'value': row['Route_ID']}
-        for _, row in unique_routes.iterrows()
+    # Если что-то пошло не так или фильтрация не удалась, показываем все маршруты
+    options = [
+        {'label': row['Name'], 'value': row['Route_ID']}
+        for _, row in df_routes.iterrows()
     ]
+    return options, df_routes.to_dict('records')
+
 
 # 3. Читаем ID маршрута из URL и устанавливаем его в Dropdown
 @app.callback(
@@ -276,6 +385,12 @@ def update_map_and_info(selected_route_id, geo_data):
                 # Приводим имена к красивому виду и пропускаем технические ID
                 display_name = col.replace('_', ' ').title()
                 value = row[col]
+                if col in ['Start_Point_Latitude','Start_Point_Longitude', 'End_Point_Latitude', 'End_Point_Longitude']:
+                    continue
+
+                if col in ['Admin_Location_ID']:
+                    display_name = "Admin Location Name"
+                    value = bring_address(conn.cursor(dictionary=True), value)
                 
                 value_for_display = "" if value is None else str(value).replace('\n','<br>')
                 
@@ -303,28 +418,6 @@ def update_map_and_info(selected_route_id, geo_data):
     return fig, info_html
 
 
-def bring_address(cursor, admin_location):
-    cursor.execute(f"SELECT * FROM admin_location WHERE Admin_Location_ID = {admin_location};")
-    location = cursor.fetchone()
-    if not location:
-        return None
-    full_path = []
-    current_id = location["Admin_Location_ID"]
-    while True:
-        ""
-        select_parent_query = f"""SELECT * FROM Admin_Location WHERE Admin_Location_ID = {current_id}"""
-        cursor.execute(select_parent_query)
-        loc_data = cursor.fetchone()
-        full_path.append(loc_data['Name'])
-                
-        if loc_data['Parent_ID'] is None or loc_data['Parent_ID'] == '':
-            break
-                    
-        current_id = loc_data['Parent_ID']
-            
-    # Инвертируем порядок элементов, чтобы получился правильный адрес сверху-вниз
-    full_path.reverse()
-    return ', '.join(full_path)
 
 # Главный колбэк: переключение страниц и генерация контента
 @app.callback(
