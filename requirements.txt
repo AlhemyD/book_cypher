@@ -4,3 +4,6 @@ pandas==2.2.3
 mysql-connector-python==9.5.0
 werkzeug==2.2.3
 flask==2.2.5
+passlib[bcrypt]
+PyJWT>=2.0.0
+python-dotenv

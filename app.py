@@ -1,10 +1,16 @@
-import dash
-from dash import dcc, html, Input, Output, callback, dash, callback_context
+import dash, os
+from dash import dcc, html, Input, Output, callback, dash, callback_context, State
 import pandas as pd
 import plotly.graph_objects as go
 import mysql.connector
 from mysql.connector import Error
 import urllib.parse
+import bcrypt
+from flask import session
+from dotenv import load_dotenv
+
+# Загружаем переменные окружения из .env файла
+load_dotenv()
 
 def bring_address(cursor, admin_location):      
     cursor.execute(f"SELECT * FROM admin_location WHERE Admin_Location_ID = {admin_location};")
@@ -30,22 +36,36 @@ def bring_address(cursor, admin_location):
     return ', '.join(full_path)
 
 # --- НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К БД ---
+
 DB_CONFIG = {
-    'host': 'localhost',
-    'database': 'travel_db',
-    'user': 'yuji',
-    'password': '5423'
+    'host': os.getenv('DB_HOST'),
+    'database': os.getenv('DB_NAME'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'ssl_disabled': os.getenv('DB_SSL_DISABLED', 'True').lower() == 'true',
+    'connection_timeout': int(os.getenv('DB_TIMEOUT', '10')),
 }
 
 # --- ИНИЦИАЛИЗАЦИЯ DASH ПРИЛОЖЕНИЯ ---
 app = dash.Dash(__name__)
 server = app.server
 
+# Секретный ключ для подписи сессий os.environ['SECRET_KEY']
+server.secret_key = os.getenv('SECRET_KEY')
+
+server.config['SESSION_COOKIE_SECURE'] = os.getenv('COOKIE_SECURE', 'False').lower() == 'true'
+server.config['SESSION_COOKIE_HTTPONLY'] = True
+server.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
 # --- ГЕНЕРАЦИЯ ЛЕЙАУТА ---
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False), # Основной компонент навигации
     html.Div(id='main-page-layout', style={'display':'block'}, children=
-    [html.H1("Визуализация туристических маршрутов", style={'textAlign': 'center'}),
+    [
+        # Панель аутентификации (динамически обновляется)
+        html.Div(id='auth-controls', style={'textAlign': 'right', 'padding': '10px'}),
+        
+        html.H1("Визуализация туристических маршрутов", style={'textAlign': 'center'}),
 
      # НОВЫЙ БЛОК: Фильтр по локации
     html.Div([
@@ -87,6 +107,37 @@ app.layout = html.Div([
         
         # Здесь будет динамически генерироваться контент
         html.Div(id='attraction-content-holder'),
+    ]),
+    
+    # === СТРАНИЦА ЛОГИНА ===
+    html.Div(id='login-page-layout', style={'display': 'none'}, children=[
+        html.H2("Вход в систему"),
+        html.Div([
+            dcc.Input(id='login-username', type='text', placeholder='Логин'),
+            dcc.Input(id='login-password', type='password', placeholder='Пароль'),
+            html.Button('Войти', id='login-button'),
+            html.Div(id='login-error-message', style={'color': 'red'})
+        ]),
+        html.Br(),
+        html.A("На главную", href="/")
+    ]),
+
+    # === СТРАНИЦА РЕГИСТРАЦИИ ПОЛЬЗОВАТЕЛЯ (ТОЛЬКО АДМИН) ===
+
+    html.Div(id='admin-register-page-layout', style={'display': 'none'}, children=[
+        html.H2("Регистрация нового пользователя"),
+        html.Div([
+            html.Label("Логин:"),
+            dcc.Input(id='register-username', type='text', placeholder='Логин'),
+            html.Label("Пароль:"),
+            dcc.Input(id='register-password', type='password', placeholder='Пароль'),
+            html.Label("Роль:"),
+            dcc.Dropdown(id='register-role', placeholder="Выберите роль", clearable=False),
+            html.Button('Зарегистрировать', id='register-button'),
+            html.Div(id='register-message')
+        ]),
+        html.Br(),
+        html.A("На главную", href="/")
     ]),
 ])
 
@@ -242,7 +293,7 @@ def filter_routes_by_location(selected_location_id, stored_routes_data):
 @app.callback(
     Output('route-dropdown', 'value'),
     Input('url', 'href'),
-    Input('route-dropdown', 'options'), # Чтобы не срабатывало до загрузки списка
+    State('route-dropdown', 'options'), # Чтобы не срабатывало до загрузки списка
 )
 def set_dropdown_value_from_url(href, options):
     if not options or not href:
@@ -436,12 +487,118 @@ def update_map_and_info(selected_route_id, geo_data):
 ##            
 ##    return dash.no_update
 
+
+
+# === КОЛБЭК АУТЕНТИФИКАЦИИ ===
+# Обновление ссылок в панели аутентификации
+
+@app.callback(
+    Output('auth-controls', 'children'),
+    Input('url', 'pathname')
+)
+def update_auth_controls(pathname):
+    children = []
+    if 'user_id' in session:
+        children.append(html.Span(f"Привет, {session['login']}! ", style={'margin-right': '10px'}))
+        children.append(html.A("Выйти", href="/logout"))
+        if session.get('role') == 'admin':
+            children.append(html.Span(" | "))
+            children.append(html.A("Панель администратора", href="/admin/register"))
+    else:
+        children.append(html.A("Войти", href="/login"))
+    return children
+
+# Обработка входа
+@app.callback(
+    Output('login-error-message', 'children'),
+    Output('url', 'pathname', allow_duplicate=True),
+    Input('login-button', 'n_clicks'),
+    State('login-username', 'value'),
+    State('login-password', 'value'),
+    prevent_initial_call=True
+)
+def handle_login(n_clicks, username, password):
+    if not n_clicks or not username or not password:
+        return "", dash.no_update
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT User_ID, Login, Password, Role_ID FROM Users WHERE Login = %s", (username,))
+        user = cursor.fetchone()
+        if user and bcrypt.checkpw(password.encode('utf-8'), user['Password'].encode('utf-8')):
+            session['user_id'] = user['User_ID']
+            session['login'] = user['Login']
+            cursor.execute("SELECT Name FROM Roles WHERE Role_ID = %s", (user['Role_ID'],))
+            role_row = cursor.fetchone()
+            session['role'] = role_row['Name'].lower() if role_row else 'user'
+            return "", "/"  # редирект на главную
+        else:
+            return "Неверный логин или пароль.", dash.no_update
+    except Error as e:
+        return f"Ошибка БД: {e}", dash.no_update
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            conn.close()
+
+# Загрузка списка ролей для формы регистрации
+@app.callback(
+    Output('register-role', 'options'),
+    Input('url', 'pathname')
+)
+def load_roles(pathname):
+    if pathname == '/admin/register':
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            query = "SELECT Role_ID AS value, Name AS label FROM Roles"
+            df = pd.read_sql(query, conn)
+            return df.to_dict('records') if not df.empty else []
+        except Error as e:
+            return []
+        finally:
+            if conn.is_connected():
+                conn.close()
+    return []
+
+# Регистрация нового пользователя (только для админа)
+@app.callback(
+    Output('register-message', 'children'),
+    Output('url', 'pathname', allow_duplicate=True),
+    Input('register-button', 'n_clicks'),
+    State('register-username', 'value'),
+    State('register-password', 'value'),
+    State('register-role', 'value'),
+    prevent_initial_call=True
+)
+def register_user(n_clicks, username, password, role_id):
+    if not n_clicks or not username or not password or not role_id:
+        return "", dash.no_update
+    if session.get('role') != 'admin':
+        return "У вас нет прав для регистрации пользователей.", dash.no_update
+    # Хэшируем пароль
+    hashed_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO Users (Login, Password, Role_ID) VALUES (%s, %s, %s)", (username, hashed_pw, role_id))
+        conn.commit()
+        return f"Пользователь '{username}' успешно зарегистрирован.", "/admin/register"
+    except Error as e:
+        return f"Ошибка: {e}", dash.no_update
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            conn.close()
+
+
+# === УПРАВЛЕНИЕ СТРАНИЦАМИ (ОСНОВНОЙ КОЛБЭК) ===
+
 # Главный колбэк: переключение страниц и генерация контента
 @app.callback(
     Output('main-page-layout', 'style'),
     Output('attraction-page-layout', 'style'),
+    Output('login-page-layout', 'style'),
+    Output('admin-register-page-layout', 'style'),
     Output('attraction-content-holder', 'children'),
-    Output('url', 'pathname'),
+    Output('url', 'pathname', allow_duplicate=True),
     Input('map-graph', 'clickData'),
     Input('route-dropdown','value'),
     Input('url', 'pathname'),
@@ -455,13 +612,28 @@ def display_page(clickData, route_id, pathname, n_clicks):
     attraction_id = None
     
     # Если нажата кнопка "Назад", показываем главную страницу
-    #if ctx.triggered:
-    triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if ctx.triggered:
+        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    else:
+        triggered_id=''
+
+    main_style={'display':'none'}
+    atttr_style={'display':'none'}
+    login_style={'display':'none'}
+    admin_reg_style={'display':'none'}
+    
     if triggered_id == "back-to-main-btn":
-        if pathname.split("?")==1 and route_id is not None:
-            return {'display':'block'}, {'display':'none'}, None, f"/?route_id={route_id}"
+        if route_id is not None:
+            return {'display':'block'}, {'display':'none'},{'display':'none'},{'display':'none'}, None, f"/?route_id={route_id}"
         else:
-            return {'display':'block'}, {'display':'none'}, None, "/"
+            return {'display':'block'}, {'display':'none'},{'display':'none'}, {'display':'none'}, None, "/"
+
+    if pathname == '/logout':
+        session.clear()
+        return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
+
+
+    # Клик по карте → страница достопримечательности
     if triggered_id == "map-graph":
         if clickData:
             point = clickData.get('points',[{}])[0]
@@ -470,15 +642,25 @@ def display_page(clickData, route_id, pathname, n_clicks):
             attraction_id = point.get('customdata')
             
             if attraction_id and isinstance(attraction_id, int):
-                pathname = f"/attraction/{attraction_id}"
+                #pathname = f"/attraction/{attraction_id}"
                 #return {'display':'none'}, {'display':'block'}, None, f"/attraction/{attraction_id}"
-                    
+                 return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, None, f"/attraction/{attraction_id}"   
             
     
+    # Страница логина
+    if pathname == '/login':
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, None, pathname
+
+    # Регистрация (только админ)
+    if pathname == '/admin/register':
+        if session.get('role') != 'admin':
+            # Нет прав — перенаправляем на главную
+            return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'block'}, None, pathname
     
     # Если URL пустой или '/', показываем главную страницу
     if pathname is None or pathname == '/' or pathname == '':
-        return {'display': 'block'}, {'display': 'none'}, None, "/"
+        return {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'}, None, "/"
 
     # Если URL начинается с '/attraction/', пытаемся показать страницу достопримечательности
     if pathname.startswith('/attraction/'):
@@ -508,8 +690,10 @@ def display_page(clickData, route_id, pathname, n_clicks):
                 attr_df = pd.read_sql(query_attr, conn, params=(attraction_id,), dtype=object)
                 
                 if attr_df.empty:
-                    error_msg = html.Div("Достопримечательность не найдена.", style={'color': 'red'})
-                    return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
+                    #error_msg = html.Div("Достопримечательность не найдена.", style={'color': 'red'})
+            
+                    #return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
+                    return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, html.Div("Достопримечательность не найдена."), pathname
                 
                 row_attr = attr_df.iloc[0]
                 
@@ -584,15 +768,7 @@ def display_page(clickData, route_id, pathname, n_clicks):
                             continue # Пропускаем итерацию
 
                     # 4. Проверка на пустое значение (исправленная логика)
-                    is_empty = False
-                    if value is None:
-                        is_empty = True
-                    elif isinstance(value, float) and pd.isna(value):
-                        is_empty = True
-                    elif isinstance(value, str) and value.strip() == '':
-                        is_empty = True
-
-                    if is_empty:
+                    if value is None or (isinstance(value, float) and pd.isna(value)) or (isinstance(value, str) and value.strip() == ''):
                         continue # Не выводим пустые поля
                         
                     value_str = str(value).replace('\n', '<br>')
@@ -642,17 +818,17 @@ def display_page(clickData, route_id, pathname, n_clicks):
                     ])
                 ])
                 
-                return {'display': 'none'}, {'display': 'block'}, full_attraction_page_html, f"/attraction/{attraction_id}"
+                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'}, full_attraction_page_html, pathname
 
             except Error as e:
                 error_msg = html.Div(f"Ошибка базы данных: {e}", style={'color': 'red'})
-                return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
+                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'}, error_msg, pathname
             finally:
-                if conn.is_connected():
+                if 'conn' in locals() and conn.is_connected():
                     conn.close()
     
     # Если URL не распознан, показываем главную страницу (или можно показать 404)
-    return {'display': 'block'}, {'display': 'none'}, None, "/"
+    return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
 
 
 
