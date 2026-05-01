@@ -1,5 +1,5 @@
 import dash, os
-from dash import dcc, html, Input, Output, callback, dash, callback_context, State
+from dash import ALL, MATCH, dcc, html, Input, Output, callback, dash, callback_context, State
 import pandas as pd
 import plotly.graph_objects as go
 import mysql.connector
@@ -8,6 +8,11 @@ import urllib.parse
 import bcrypt
 from flask import session
 from dotenv import load_dotenv
+import base64
+from flask import send_from_directory
+import uuid
+import json, requests
+from datetime import datetime
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -35,6 +40,17 @@ def bring_address(cursor, admin_location):
     full_path.reverse()
     return ', '.join(full_path)
 
+def get_admin_location_options():
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = """
+        SELECT Admin_Location_ID AS value, Name AS label
+        FROM Admin_Location 
+        ORDER BY Level, Name;
+        """
+    df = pd.read_sql(query, conn)
+    df['label'] = df['value'].apply(lambda x: bring_address(cursor = conn.cursor(dictionary=True), admin_location = x))
+    return df.to_dict('records') if not df.empty else []
+
 # --- НАСТРОЙКИ ПОДКЛЮЧЕНИЯ К БД ---
 
 DB_CONFIG = {
@@ -56,6 +72,163 @@ server.secret_key = os.getenv('SECRET_KEY')
 server.config['SESSION_COOKIE_SECURE'] = os.getenv('COOKIE_SECURE', 'False').lower() == 'true'
 server.config['SESSION_COOKIE_HTTPONLY'] = True
 server.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+# ---------- Глобальные метаданные о структуре таблиц (загружаются при старте) ----------
+def load_table_metadata(table_name):
+    """
+    Возвращает список словарей с информацией о колонках:
+    name, data_type, is_foreign, referenced_table, referenced_column
+    """
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+
+    # Основные типы колонок
+    cursor.execute("""
+        SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+    """, (DB_CONFIG['database'], table_name))
+    columns = {row['COLUMN_NAME']: row for row in cursor.fetchall()}
+
+    # Внешние ключи
+    cursor.execute("""
+        SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND REFERENCED_TABLE_NAME IS NOT NULL
+    """, (DB_CONFIG['database'], table_name))
+    foreign_keys = {}
+    for row in cursor.fetchall():
+        foreign_keys[row['COLUMN_NAME']] = {
+            'table': row['REFERENCED_TABLE_NAME'],
+            'column': row['REFERENCED_COLUMN_NAME']
+        }
+
+    result = []
+    for col_name, col_info in columns.items():
+        fk = foreign_keys.get(col_name)
+        result.append({
+            'name': col_name,
+            'data_type': col_info['DATA_TYPE'],
+            'is_foreign': fk is not None,
+            'referenced_table': fk['table'] if fk else None,
+            'referenced_column': fk['column'] if fk else None
+        })
+
+    conn.close()
+    return result
+
+# Загружаем метаданные при старте
+ATTRACTION_META = load_table_metadata('Attractions')
+ROUTE_META = load_table_metadata('Routes')
+
+# Для справочников (все таблицы с простой структурой ID + Name)
+DICT_TABLES = {
+    'object_types': 'Object_Types',
+    'categories': 'Categories',
+    'seasons': 'Seasons',
+    'difficulties': 'Difficulties',
+    'route_types': 'Route_Types',
+    'route_themes': 'Route_Themes',
+    'object_values': 'Object_Values',
+    'object_value_statuses': 'Object_Value_Statuses',
+    'technical_conditions': 'Technical_Conditions',
+    'object_statuses': 'Object_Statuses',
+    'creation_purposes': 'Creation_Purposes',
+    'authors': 'Authors',
+    'owners': 'Owners',
+    'geomorphologies': 'Geomorphologies',
+    'recreation_potentials': 'Recreation_Potentials',
+    'length_time_metrics': 'Length_Time_Metrics',
+    'roles':'Roles'
+}
+
+# ---------- Добавьте эти словари после загрузки метаданных ----------
+ATTRACTION_FIELD_ALIASES = {
+    'Name': 'Название',
+    'Object_Type_ID': 'Тип объекта',
+    'Category_ID': 'Категория',
+    'Description': 'Описание',
+    'Admin_Location_ID': 'Административное расположение',
+    'Latitude': 'Широта',
+    'Longitude': 'Долгота',
+    'Accessibility': 'Способы проезда',
+    'City_Distance': 'Расстояние от ключевой точки (км)',
+    'Key_City_ID': 'Ключевая точка',
+    'History': 'Историческая справка',
+    'Legends': 'Легенды',
+    'Object_Value_ID': 'Значимость объекта',
+    'Object_Value_Status_ID': 'Статус значимости',
+    'Object_Value_Description': 'Описание значимости',
+    'Modernity': 'Благоустройство',
+    'Recreation_Potential_ID': 'Рекреационный потенциал',
+    'Recreation_Potential_Description': 'Описание рекреационного потенциала',
+    'Season_ID': 'Сезон',
+    'Time_Recommendation': 'Рекомендуемое время визита',
+    'Visitor_Requirements': 'Требования к посетителю',
+    'Rules': 'Правила поведения',
+    'Guides': 'Гиды',
+    'Price': 'Стоимость посещения',
+    'Relief': 'Рельеф',
+    'Geomorphology_ID': 'Геоморфология',
+    'Geologic': 'Геологическое строение',
+    'Climate': 'Климат',
+    'Hydrology': 'Гидрология',
+    'Flora_Fauna': 'Флора и фауна',
+    'Ecologic': 'Экологическое состояние',
+    'Creation_Date': 'Дата создания',
+    'Author_ID': 'Автор',
+    'Style_Architecture': 'Архитектурный стиль',
+    'Materials_and_Technologies': 'Материалы и технологии',
+    'Creation_Purpose_ID': 'Цель создания',
+    'Technical_Condition_ID': 'Техническое состояние',
+    'Object_Status_ID': 'Статус объекта',
+    'Owner_ID': 'Владелец',
+    'Restoration_Works': 'Реставрационные работы',
+    'TCI': 'Климатический индекс'
+}
+
+ROUTE_FIELD_ALIASES = {
+    'Name': 'Название маршрута',
+    'Route_Type_ID': 'Тип маршрута',
+    'Route_Theme_ID': 'Тема маршрута',
+    'Difficulty_ID': 'Сложность',
+    'Length': 'Протяжённость (км)',
+    'Length_Time': 'Продолжительность',
+    'Length_Time_Metric_ID': 'Единица измерения времени',
+    'Description': 'Описание маршрута',
+    'Recommendations': 'Рекомендации по снаряжению',
+    'Season_ID': 'Сезон',
+    'Organisators_Contacts': 'Контакты организаторов',
+    'Admin_Location_ID': 'Административное расположение',
+    'Start_Point_Latitude': 'Широта начала маршрута',
+    'Start_Point_Longitude': 'Долгота начала маршрута',
+    'End_Point_Latitude': 'Широта конца маршрута',
+    'End_Point_Longitude': 'Долгота конца маршрута'
+}
+
+# Порядок полей в формах (в соответствии с таблицами в БД)
+ATTRACTION_ORDER = [
+    'Name', 'Object_Type_ID', 'Category_ID', 'Description', 'Admin_Location_ID',
+    'Latitude', 'Longitude', 'Accessibility', 'City_Distance', 'Key_City_ID',
+    'History', 'Legends', 'Object_Value_ID', 'Object_Value_Status_ID',
+    'Object_Value_Description', 'Modernity', 'Recreation_Potential_ID',
+    'Recreation_Potential_Description', 'Season_ID', 'Time_Recommendation',
+    'Visitor_Requirements', 'Rules', 'Guides', 'Price', 'Relief',
+    'Geomorphology_ID', 'Geologic', 'Climate', 'Hydrology', 'Flora_Fauna',
+    'Ecologic', 'Creation_Date', 'Author_ID', 'Style_Architecture',
+    'Materials_and_Technologies', 'Creation_Purpose_ID',
+    'Technical_Condition_ID', 'Object_Status_ID', 'Owner_ID',
+    'Restoration_Works', 'TCI'
+]
+
+ROUTE_ORDER = [
+    'Name', 'Route_Type_ID', 'Route_Theme_ID', 'Difficulty_ID', 'Length',
+    'Length_Time', 'Length_Time_Metric_ID', 'Description', 'Recommendations',
+    'Season_ID', 'Organisators_Contacts', 'Admin_Location_ID',
+    'Start_Point_Latitude', 'Start_Point_Longitude', 'End_Point_Latitude',
+    'End_Point_Longitude'
+]
+
 
 # --- ГЕНЕРАЦИЯ ЛЕЙАУТА ---
 app.layout = html.Div([
@@ -103,8 +276,10 @@ app.layout = html.Div([
     # 3. БЛОК СТРАНИЦЫ ДОСТОПРИМЕЧАТЕЛЬНОСТИ (скрыт по умолчанию)
     html.Div(id='attraction-page-layout', style={'display': 'none'}, children=[
         # Кнопка для возврата на главную страницу
-        html.Button("← Назад к маршрутам", id='back-to-main-btn', n_clicks=0, style={'margin-bottom': '20px'}),
-        
+        html.Div([
+            html.Button("← Назад к маршрутам", id='back-to-main-btn', n_clicks=0, style={'margin-bottom': '20px'}),
+            html.A("На главную", href="/", style={'margin-left': '10px'})
+        ]),
         # Здесь будет динамически генерироваться контент
         html.Div(id='attraction-content-holder'),
     ]),
@@ -139,6 +314,18 @@ app.layout = html.Div([
         html.Br(),
         html.A("На главную", href="/")
     ]),
+
+    #Макет административной панели
+    html.Div(id='admin-page-layout', style={'display': 'none'}, children=[
+        html.H2("Панель администратора"),
+        html.A("На главную", href="/", style={'margin-bottom': '10px', 'display': 'block'}),
+        dcc.Tabs(id="admin-tabs", value='tab-attractions', children=[
+            dcc.Tab(label='Достопримечательности', value='tab-attractions'),
+            dcc.Tab(label='Маршруты', value='tab-routes'),
+            dcc.Tab(label='Справочники', value='tab-dicts'),
+        ]),
+        html.Div(id='admin-content')
+    ])
 ])
 
 # --- КОЛБЭКИ (ЛОГИКА) ---
@@ -345,16 +532,42 @@ def update_map_and_info(selected_route_id, geo_data):
     route_points_df = df_points[df_points['Route_ID'] == selected_route_id]
 
     fig = go.Figure()
+
+    # Попытка получить сохранённую дорожную геометрию маршрута
+    route_geom = None
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT route_geometry FROM Routes WHERE Route_ID = %s", (selected_route_id,))
+        row = cursor.fetchone()
+        if row and row['route_geometry']:
+            # Если хранится как строка JSON, десериализуем
+            if isinstance(row['route_geometry'], str):
+                route_geom = json.loads(row['route_geometry'])
+            else:
+                route_geom = row['route_geometry']
+        conn.close()
+    except:
+        pass
     
     # Линия маршрута
-    fig.add_trace(go.Scattermapbox(
-        lat=route_points_df['lat'],
-        lon=route_points_df['lon'],
-        mode='lines',
-        line=dict(color='blue', width=4),
-        name='Маршрут',
-        hoverinfo='skip'
-    ))
+    if route_geom and 'coordinates' in route_geom:
+        coords = route_geom['coordinates']
+        lats = [pt[1] for pt in coords]
+        lons = [pt[0] for pt in coords]
+        fig.add_trace(go.Scattermapbox(
+            lat=lats, lon=lons, mode='lines',
+            line=dict(color='blue', width=4), name='Маршрут', hoverinfo='skip'
+        ))
+    else:
+        fig.add_trace(go.Scattermapbox(
+            lat=route_points_df['lat'],
+            lon=route_points_df['lon'],
+            mode='lines',
+            line=dict(color='blue', width=4),
+            name='Маршрут',
+            hoverinfo='skip'
+        ))
 
     # Фильтруем только реальные достопримечательности (у них есть Attraction_ID > 0)
     # Старт и Финиш мы исключаем из этого списка, чтобы по ним нельзя было перейти.
@@ -391,9 +604,17 @@ def update_map_and_info(selected_route_id, geo_data):
         (route_points_df['Attraction_Name'] == 'Финиш маршрута')
     ]
 
+    start_df = route_points_df[
+        (route_points_df['Attraction_Name'] == 'Старт маршрута')
+    ]
+
+    finish_df = route_points_df[
+        (route_points_df['Attraction_Name'] == 'Финиш маршрута')
+    ]
+
     fig.add_trace(go.Scattermapbox(
-        lat=start_finish_df['lat'],
-        lon=start_finish_df['lon'],
+        lat=start_df['lat'],
+        lon=start_df['lon'],
         mode='markers',
         
         # У этих точек НЕТ customdata, поэтому по ним нельзя будет кликнуть для перехода
@@ -403,8 +624,25 @@ def update_map_and_info(selected_route_id, geo_data):
         
         hovertemplate="<b>%{text}</b><extra></extra>",
         
-        text=start_finish_df['Attraction_Name'],
-        name='Точки старта/финиша',
+        text=start_df['Attraction_Name'],
+        name='Точка старта',
+        hoverinfo='skip' # Используем свой hovertemplate
+    ))
+
+    fig.add_trace(go.Scattermapbox(
+        lat=finish_df['lat'],
+        lon=finish_df['lon'],
+        mode='markers',
+        
+        # У этих точек НЕТ customdata, поэтому по ним нельзя будет кликнуть для перехода
+        
+        marker=dict(size=12, color='orange'), 
+        # Зеленый цвет, чтобы визуально отличить от красных достопримечательностей
+        
+        hovertemplate="<b>%{text}</b><extra></extra>",
+        
+        text=finish_df['Attraction_Name'],
+        name='Точка финиша',
         hoverinfo='skip' # Используем свой hovertemplate
     ))
     
@@ -423,7 +661,24 @@ def update_map_and_info(selected_route_id, geo_data):
         conn = mysql.connector.connect(**DB_CONFIG)
         
         # Запрос выбираем все поля из таблицы Routes для выбранного ID
-        query = "SELECT * FROM Routes WHERE Route_ID = %s;"
+        query = """
+    SELECT 
+        r.*,
+        al.Name as Admin_Location_Name,
+        rt.Name as Route_Type_Name,
+        rth.Name as Route_Theme_Name,
+        d.Name as Difficulty_Name,
+        ltm.Name as Length_Time_Metric_Name,
+        s.Name as Season_Name
+    FROM Routes r
+    LEFT JOIN Admin_Location al ON r.Admin_Location_ID = al.Admin_Location_ID
+    LEFT JOIN Route_Types rt ON r.Route_Type_ID = rt.Route_Type_ID
+    LEFT JOIN Route_Themes rth ON r.Route_Theme_ID = rth.Route_Theme_ID
+    LEFT JOIN Difficulties d ON r.Difficulty_ID = d.Difficulty_ID
+    LEFT JOIN Length_Time_Metrics ltm ON r.Length_Time_Metric_ID = ltm.Length_Time_Metric_ID
+    LEFT JOIN Seasons s ON r.Season_ID = s.Season_ID
+    WHERE r.Route_ID = %s;
+    """#"SELECT * FROM Routes WHERE Route_ID = %s;"
         
         info_df = pd.read_sql(query, conn, params=(selected_route_id,), dtype=object)
          
@@ -432,16 +687,42 @@ def update_map_and_info(selected_route_id, geo_data):
              
             # Динамически создаем HTML-блок со всеми полями из таблицы
             content = []
+            skip_fields = {'Route_ID', 'Start_Point_Latitude', 'Start_Point_Longitude',
+                       'End_Point_Latitude', 'End_Point_Longitude', 'route_geometry',
+                       'Deleted', 'Creator_User_ID', 'Last_Updated_User_ID',
+                       'Route_Type_ID', 'Route_Theme_ID',
+                       'Difficulty_ID', 'Length_Time_Metric_ID', 'Season_ID'}
+            aliases = {
+                'Admin_Location_Name': 'Административное расположение',
+                'Route_Type_Name': 'Тип маршрута',
+                'Route_Theme_Name': 'Тема маршрута',
+                'Difficulty_Name': 'Сложность',
+                'Length_Time_Metric_Name': 'Единица измерения времени',
+                'Season_Name': 'Сезон',
+                'Name':'Название маршрута',
+                'Length':'Протяжённость маршрута (км)',
+                'Length_Time':'Продолжительность маршрута',
+                'Description':'Описание',
+                'Recommendations':'Рекоммендации по снаряжению и провианту',
+                'Organisators_Contacts':'Контакты организаторов экскурсий'
+            }
             for idx, col in enumerate(info_df.columns):
                 # Приводим имена к красивому виду и пропускаем технические ID
-                display_name = col.replace('_', ' ').title()
+                if col in aliases:
+                    display_name = aliases[col]
+                else:
+                    display_name = col.replace('_', ' ').title()                                
+                #display_name = aliases[col]
                 value = row[col]
-                if col in ['Start_Point_Latitude','Start_Point_Longitude', 'End_Point_Latitude', 'End_Point_Longitude']:
+                if col in skip_fields:#['route_geometry','Start_Point_Latitude','Start_Point_Longitude', 'End_Point_Latitude', 'End_Point_Longitude']:
                     continue
 
                 if col in ['Admin_Location_ID']:
-                    display_name = "Admin Location Name"
+                    display_name = "Административное расположение"
                     value = bring_address(conn.cursor(dictionary=True), value)
+
+                if value is None or (isinstance(value, str) and value.strip() == ''):
+                    continue
                 
                 value_for_display = "" if value is None else str(value).replace('\n','<br>')
                 
@@ -458,6 +739,8 @@ def update_map_and_info(selected_route_id, geo_data):
             ])
              
             fig.update_layout(title_text=f"Маршрут: {row['Name']}")
+        else:
+            info_html=html.Div("Маршрут не найден")
              
     except Error as e:
         print(f"Ошибка при получении информации о маршруте: {e}")
@@ -503,7 +786,9 @@ def update_auth_controls(pathname):
         children.append(html.A("Выйти", href="/logout"))
         if session.get('role') == 'admin':
             children.append(html.Span(" | "))
-            children.append(html.A("Панель администратора", href="/admin/register"))
+            children.append(html.A("Панель администратора", href="/admin"))
+            children.append(html.Span(" | "))
+            children.append(html.A("Создать пользователя", href="/admin/register"))
     else:
         children.append(html.A("Войти", href="/login"))
     return children
@@ -589,14 +874,1003 @@ def register_user(n_clicks, username, password, role_id):
             conn.close()
 
 
-# === УПРАВЛЕНИЕ СТРАНИЦАМИ (ОСНОВНОЙ КОЛБЭК) ===
+# ---------- АДМИНИСТРАТИВНАЯ ПАНЕЛЬ ----------
+# Вкладки внутри админки
+@app.callback(
+    Output('admin-content', 'children'),
+    Input('admin-tabs', 'value')
+)
 
-# Главный колбэк: переключение страниц и генерация контента
+
+# === УПРАВЛЕНИЕ СТРАНИЦАМИ (ОСНОВНОЙ КОЛБЭК) ===
+def render_admin_tab(tab):
+    if tab == 'tab-attractions':
+        return html.Div([
+            dcc.Store(id='edit-attraction-id', data=None),
+            html.H3("Список достопримечательностей"),
+            dcc.Dropdown(id='attraction-select', placeholder='Выберите достопримечательность'),
+            html.Button('Новая', id='new-attraction-btn', n_clicks=0),
+            html.Br(),
+            html.Div(id='attraction-edit-form')
+        ])
+    elif tab == 'tab-routes':
+        return html.Div([
+            dcc.Store(id='edit-route-id', data=None),
+            dcc.Store(id='osrm-variants-store', data=[]),
+            dcc.Store(id='selected-attrs-store', data=[]),  # хранит [{"id": 1, "name": "..."}, ...]
+            html.H3("Список маршрутов"),
+            dcc.Dropdown(id='route-admin-select', placeholder='Выберите маршрут'),
+            html.Button('Новый', id='new-route-btn', n_clicks=0),
+            html.Br(),
+            html.Div(id='route-edit-form')
+        ])
+    elif tab == 'tab-dicts':
+        return html.Div([
+            html.H3("Управление справочниками"),
+            dcc.Dropdown(id='dict-type-select', options=[
+                {'label': 'Типы объектов', 'value': 'Object_Types'},
+                {'label': 'Категории', 'value': 'Categories'},
+                {'label': 'Сезоны', 'value': 'Seasons'},
+                {'label': 'Сложности', 'value': 'Difficulties'},
+                {'label': 'Типы маршрутов', 'value': 'Route_Types'},
+                {'label': 'Темы маршрутов', 'value': 'Route_Themes'},
+                {'label': 'Ценность объектов', 'value': 'Object_Values'},
+                {'label': 'Статусы ценности', 'value': 'Object_Value_Statuses'},
+                {'label': 'Технические состояния', 'value': 'Technical_Conditions'},
+                {'label': 'Статусы объектов', 'value': 'Object_Statuses'},
+                {'label': 'Цели создания', 'value': 'Creation_Purposes'},
+                {'label': 'Авторы', 'value': 'Authors'},
+                {'label': 'Владельцы', 'value': 'Owners'},
+                {'label': 'Геоморфологии', 'value': 'Geomorphologies'},
+                {'label': 'Рекреационный потенциал', 'value': 'Recreation_Potentials'},
+                {'label': 'Единицы измерения', 'value': 'Length_Time_Metrics'},
+                {'label':'Роли пользователей', 'value':'Roles'}
+            ], value='Object_Types'),
+            html.Button('Добавить запись', id='dict-add-btn'),
+            html.Div(id='dict-list-container'),
+            html.Div(id='dict-edit-form')
+        ])
+    return "Выберите вкладку"
+
+# ================== РЕДАКТИРОВАНИЕ ДОСТОПРИМЕЧАТЕЛЬНОСТЕЙ ==================
+# Заполнение выпадающего списка
+@app.callback(
+    Output('attraction-select', 'options'),
+    Input('attraction-select', 'search_value'),
+)
+def update_attraction_list(search):
+    conn = mysql.connector.connect(**DB_CONFIG)
+    query = "SELECT Attraction_ID AS value, Name AS label FROM Attractions WHERE Deleted = 0"
+    df = pd.read_sql(query, conn)
+    conn.close()
+    return df.to_dict('records')
+
+def generate_attraction_form(attr_id):
+    data = {}
+    if attr_id:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        query = "SELECT * FROM Attractions WHERE Attraction_ID = %s"
+        df = pd.read_sql(query, conn, params=(attr_id,))
+        if not df.empty:
+            data = df.iloc[0].to_dict()
+        conn.close()
+
+    fields = []
+    skip_fields = {'Attraction_ID', 'Deleted', 'Last_Updated', 'Created',
+                   'Creator_User_ID', 'Last_Updated_User_ID'}
+    meta_dict = {m['name']: m for m in ATTRACTION_META}
+
+    for col_name in ATTRACTION_ORDER:
+        if col_name in skip_fields:
+            continue
+        col_meta = meta_dict.get(col_name)
+        if not col_meta:
+            continue
+        label_name = ATTRACTION_FIELD_ALIASES.get(col_name, col_name)
+        value = data.get(col_name, None)
+        if isinstance(value, datetime):
+            value = value.strftime('%Y-%m-%dT%H:%M')
+        elif value is None:
+            value = ''
+
+        options = []
+        if col_meta['is_foreign']:
+            ref_table = col_meta['referenced_table']
+            ref_col = col_meta['referenced_column']
+            try:
+                if ref_table == 'admin_location':
+                    options = get_admin_location_options()
+                else:
+                    conn_temp = mysql.connector.connect(**DB_CONFIG)
+                    df_opts = pd.read_sql(f"SELECT {ref_col} AS value, Name AS label FROM {ref_table} WHERE Deleted = 0", conn_temp)
+                    conn_temp.close()
+                    options = df_opts.to_dict('records')
+            except Exception as e:
+                print(f"Ошибка загрузки опций для {col_name}: {e}")
+
+        if col_meta['is_foreign']:
+            field = html.Div([
+                html.Label(label_name),
+                dcc.Dropdown(
+                    id={'type': 'attr-field', 'name': col_name},
+                    options=options,
+                    value=value if value != '' else None,
+                    placeholder=f"Выберите {label_name.lower()}"
+                )
+            ])
+        else:
+            dtype = col_meta['data_type'].lower()
+            if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint', 'decimal', 'float', 'double'):
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Input(id={'type': 'attr-field', 'name': col_name}, type='number', value=value,
+                              placeholder=f"Введите {label_name.lower()}")
+                ])
+            elif dtype in ('datetime', 'timestamp'):
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Input(id={'type': 'attr-field', 'name': col_name}, type='datetime-local', value=value,
+                              placeholder=f"Выберите {label_name.lower()}")
+                ])
+            else:
+                # Все текстовые поля – Textarea (многострочный ввод)
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Textarea(
+                        id={'type': 'attr-field', 'name': col_name},
+                        value=value,
+                        placeholder=f"Введите {label_name.lower()}",
+                        style={'width': '100%', 'height': 100}
+                    )
+                ])
+        fields.append(field)
+
+    fields.append(html.Div([
+        html.Label("Медиа (фото/видео)"),
+        dcc.Upload(
+            id='upload-media',
+            children=html.Div(['Перетащите или ', html.A('выберите')]),
+            multiple=True,
+            style={'border': '1px dashed', 'padding': '10px'}
+        )
+    ]))
+    fields.append(html.Button('Сохранить', id='save-attraction-btn'))
+    fields.append(html.Div(id='attraction-save-status'))
+    return html.Div(fields)
+
+# Загрузка данных в форму
+@app.callback(
+    Output('attraction-edit-form', 'children'),
+    Output('edit-attraction-id', 'data'),
+    Input('attraction-select', 'value'),
+    Input('new-attraction-btn', 'n_clicks'),
+)
+def load_attraction_form(attraction_id, new_clicks):
+    ctx = callback_context
+    triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
+    if triggered == 'new-attraction-btn' and new_clicks > 0:
+        return generate_attraction_form(None), None
+    if attraction_id:
+        return generate_attraction_form(attraction_id), attraction_id
+    return html.Div(), None
+
+@app.callback(
+    Output('attraction-save-status', 'children'),
+    Input('save-attraction-btn', 'n_clicks'),
+    State('edit-attraction-id', 'data'),
+    State({'type': 'attr-field', 'name': ALL}, 'value'),
+    State({'type': 'attr-field', 'name': ALL}, 'id'),
+    prevent_initial_call=True
+)
+def save_attraction(n_clicks, attr_id, values, ids):
+    if not n_clicks:
+        return ""
+    # Собираем словарь значений, игнорируя None (незаполненные Dropdown)
+    data = {}
+    for val, id_dict in zip(values, ids):
+        col_name = id_dict['name']
+        # Находим метаданные колонки для преобразования типов
+        col_meta = next((m for m in ATTRACTION_META if m['name'] == col_name), None)
+        if val is None or val == '':
+            if col_meta and col_meta['is_foreign']:
+                # Для внешнего ключа None означает NULL
+                data[col_name] = None
+            else:
+                continue  # пропускаем пустые необязательные поля
+        else:
+            # Преобразование типа
+            if col_meta:
+                dtype = col_meta['data_type'].lower()
+                if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint'):
+                    data[col_name] = int(val)
+                elif dtype in ('decimal', 'float', 'double'):
+                    data[col_name] = float(val)
+                elif dtype in ('datetime', 'timestamp'):
+                    try:
+                        data[col_name] = datetime.strptime(val, '%Y-%m-%dT%H:%M')
+                    except:
+                        data[col_name] = val  # оставляем как есть
+                else:
+                    data[col_name] = str(val)
+            else:
+                data[col_name] = val
+    user_id = session.get('user_id', None)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    try:
+        if attr_id:
+            data['Last_Updated_User_ID'] = user_id
+            set_clause = ", ".join([f"{k} = %s" for k in data.keys()])
+            cursor.execute(f"UPDATE Attractions SET {set_clause} WHERE Attraction_ID = %s",
+                           list(data.values()) + [attr_id])
+        else:
+            data['Creator_User_ID'] = user_id
+            data['Last_Updated_User_ID'] = user_id
+            columns = ", ".join(data.keys())
+            placeholders = ", ".join(["%s"] * len(data))
+            cursor.execute(f"INSERT INTO Attractions ({columns}) VALUES ({placeholders})", list(data.values()))
+            attr_id = cursor.lastrowid
+        conn.commit()
+        return f"Сохранено (ID: {attr_id})"
+    except Error as e:
+        return f"Ошибка сохранения: {e}"
+    finally:
+        conn.close()
+
+# Загрузка медиа (без изменений)
+@app.callback(
+    Output('upload-media', 'children', allow_duplicate=True),
+    Input('upload-media', 'contents'),
+    State('upload-media', 'filename'),
+    State('edit-attraction-id', 'data'),
+    prevent_initial_call=True
+)
+def handle_media_upload(contents_list, names_list, attr_id):
+    if not contents_list or not attr_id:
+        return "Нет ID достопримечательности"
+    saved = []
+    for content, name in zip(contents_list, names_list):
+        content_type, content_string = content.split(',')
+        decoded = base64.b64decode(content_string)
+        ext = os.path.splitext(name)[1]
+        filename = f"{attr_id}_{uuid.uuid4().hex}{ext}"
+        filepath = os.path.join('assets', filename)
+        with open(filepath, 'wb') as f:
+            f.write(decoded)
+        video_exts = ['.mp4', '.webm', '.avi', '.mov']
+        media_type = 'video' if ext.lower() in video_exts else 'photo'
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO Media (Attraction_ID, Type, File_Path) VALUES (%s, %s, %s)",
+                           (attr_id, media_type, filename))
+            conn.commit()
+            conn.close()
+            saved.append(name)
+        except Error as e:
+            print(f"Ошибка сохранения медиа: {e}")
+    return f"Загружено: {', '.join(saved)}"
+
+
+# ================== РЕДАКТИРОВАНИЕ МАРШРУТОВ ==================
+@app.callback(
+    Output('route-admin-select', 'options'),
+    Input('route-admin-select', 'search_value')
+)
+def update_route_list(search):
+    conn = mysql.connector.connect(**DB_CONFIG)
+    df = pd.read_sql("SELECT Route_ID AS value, Name AS label FROM Routes", conn)
+    conn.close()
+    return df.to_dict('records')
+
+def generate_route_form(route_id):
+    data = {}
+    if route_id:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT * FROM Routes WHERE Route_ID = %s", conn, params=(route_id,))
+        if not df.empty:
+            data = df.iloc[0].to_dict()
+        conn.close()
+
+    fields = []
+    skip_fields = {'Route_ID', 'Deleted', 'Creator_User_ID', 'Last_Updated_User_ID',
+                   'route_geometry', 'Last_Updated', 'Created'}
+    meta_dict = {m['name']: m for m in ROUTE_META}
+
+    for col_name in ROUTE_ORDER:
+        if col_name in skip_fields:
+            continue
+        col_meta = meta_dict.get(col_name)
+        if not col_meta:
+            continue
+        label_name = ROUTE_FIELD_ALIASES.get(col_name, col_name)
+        value = data.get(col_name, None)
+        if isinstance(value, datetime):
+            value = value.strftime('%Y-%m-%dT%H:%M')
+        elif value is None:
+            value = ''
+
+        options = []
+        if col_meta['is_foreign']:
+            ref_table = col_meta['referenced_table']
+            ref_col = col_meta['referenced_column']
+            try:
+                if ref_table == 'admin_location':
+                    options = get_admin_location_options()
+                else:
+                    conn_temp = mysql.connector.connect(**DB_CONFIG)
+                    df_opts = pd.read_sql(f"SELECT {ref_col} AS value, Name AS label FROM {ref_table} WHERE Deleted = 0", conn_temp)
+                    conn_temp.close()
+                    options = df_opts.to_dict('records')
+            except Exception as e:
+                print(f"Ошибка загрузки опций для {col_name}: {e}")
+
+        if col_meta['is_foreign']:
+            field = html.Div([
+                html.Label(label_name),
+                dcc.Dropdown(
+                    id={'type': 'route-field', 'name': col_name},
+                    options=options,
+                    value=value if value != '' else None,
+                    placeholder=f"Выберите {label_name.lower()}"
+                )
+            ])
+        else:
+            dtype = col_meta['data_type'].lower()
+            if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint', 'decimal', 'float', 'double'):
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Input(id={'type': 'route-field', 'name': col_name}, type='number', value=value,
+                              placeholder=f"Введите {label_name.lower()}")
+                ])
+            elif dtype in ('datetime', 'timestamp'):
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Input(id={'type': 'route-field', 'name': col_name}, type='datetime-local', value=value,
+                              placeholder=f"Выберите {label_name.lower()}")
+                ])
+            else:
+                field = html.Div([
+                    html.Label(label_name),
+                    dcc.Textarea(
+                        id={'type': 'route-field', 'name': col_name},
+                        value=value,
+                        placeholder=f"Введите {label_name.lower()}",
+                        style={'width': '100%', 'height': 100}
+                    )
+                ])
+        fields.append(field)
+
+    # --- БЛОК ДОСТОПРИМЕЧАТЕЛЬНОСТЕЙ (восстановлен полностью) ---
+    fields.append(html.Hr())
+    fields.append(html.H4("Достопримечательности маршрута"))
+    fields.append(html.Div([
+        dcc.Dropdown(id='route-attr-add-dropdown', placeholder='Выберите существующую'),
+        html.Button('Добавить выбранную', id='add-attr-btn', n_clicks=0),
+        html.Button('Создать новую', id='new-attr-btn', n_clicks=0),
+    ]))
+    fields.append(html.Div(id='new-attr-modal', style={'display': 'none'}, children=[
+        html.Label("Название"),
+        dcc.Input(id='new-attr-name', type='text', placeholder='Введите название'),
+        html.Label("Широта"),
+        dcc.Input(id='new-attr-lat', type='number', placeholder='Широта'),
+        html.Label("Долгота"),
+        dcc.Input(id='new-attr-lon', type='number', placeholder='Долгота'),
+        html.Button('Сохранить', id='save-new-attr-btn'),
+        html.Button('Отмена', id='cancel-new-attr-btn'),
+    ]))
+    fields.append(html.Div(id='selected-attrs-list'))
+
+    fields.append(html.Hr())
+    fields.append(html.Button("Построить варианты маршрута", id='build-osrm-btn', n_clicks=0))
+    fields.append(dcc.Graph(id='osrm-options-map', style={'height': '400px'}))
+    fields.append(dcc.RadioItems(id='select-osrm-variant', options=[], value=None))
+    fields.append(html.Button("Сохранить маршрут", id='save-route-btn'))
+    fields.append(html.Div(id='route-save-status'))
+
+    return html.Div(fields)
+
+
+@app.callback(
+    Output('route-edit-form', 'children'),
+    Output('edit-route-id', 'data'),
+    Output('selected-attrs-store', 'data'),
+    Input('route-admin-select', 'value'),
+    Input('new-route-btn', 'n_clicks'),
+)
+def load_route_form(route_id, new_clicks):
+    ctx = callback_context
+    triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
+    if triggered == 'new-route-btn' and new_clicks > 0:
+        return generate_route_form(None), None, []
+    if route_id:
+        # Загружаем существующие достопримечательности в порядке Number
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("""SELECT a.Attraction_ID, a.Name
+            FROM Routes_Attractions ra JOIN Attractions a ON ra.Attraction_ID = a.Attraction_ID
+            WHERE ra.Route_ID = %s ORDER BY ra.Number""", (route_id,))
+        selected = [{'id': row['Attraction_ID'], 'name': row['Name']} for row in cursor.fetchall()]
+        conn.close()
+        return generate_route_form(route_id), route_id, selected
+    return html.Div(), None, []
+
+# Загрузка опций для выпадающего списка достопримечательностей
+@app.callback(
+    Output('route-attr-add-dropdown', 'options'),
+    Input('route-attr-add-dropdown', 'search_value')
+)
+def load_attr_options(search):
+    conn = mysql.connector.connect(**DB_CONFIG)
+    df = pd.read_sql("SELECT Attraction_ID AS value, Name AS label FROM Attractions WHERE Deleted = 0", conn)
+    conn.close()
+    return df.to_dict('records')
+
+# Добавление существующей достопримечательности в список
+@app.callback(
+    Output('selected-attrs-store', 'data', allow_duplicate=True),
+    Input('add-attr-btn', 'n_clicks'),
+    State('route-attr-add-dropdown', 'value'),
+    State('route-attr-add-dropdown', 'options'),
+    State('selected-attrs-store', 'data'),
+    prevent_initial_call=True
+)
+def add_attr_to_list(n_clicks, value, options, current_list):
+    if not n_clicks or not value:
+        return dash.no_update
+    # Проверяем, нет ли уже такого ID
+    if any(item['id'] == value for item in current_list):
+        return dash.no_update
+    # Находим название по опциям
+    name = next((opt['label'] for opt in options if opt['value'] == value), str(value))
+    current_list.append({'id': value, 'name': name})
+    return current_list
+
+# Управление модальным окном создания новой достопримечательности
+@app.callback(
+    Output('new-attr-modal', 'style'),
+    Input('new-attr-btn', 'n_clicks'),
+    Input('cancel-new-attr-btn', 'n_clicks'),
+    State('new-attr-modal', 'style'),
+    prevent_initial_call=True
+)
+def toggle_modal(new_clicks, cancel_clicks, current_style):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    trig = ctx.triggered[0]['prop_id'].split('.')[0]
+    if trig == 'new-attr-btn':
+        return {'display': 'block'}
+    return {'display': 'none'}
+
+# Сохранение новой достопримечательности и добавление её в список
+@app.callback(
+    Output('selected-attrs-store', 'data', allow_duplicate=True),
+    Output('new-attr-modal', 'style', allow_duplicate=True),
+    Input('save-new-attr-btn', 'n_clicks'),
+    State('new-attr-name', 'value'),
+    State('new-attr-lat', 'value'),
+    State('new-attr-lon', 'value'),
+    State('selected-attrs-store', 'data'),
+    prevent_initial_call=True
+)
+def save_new_attr(n_clicks, name, lat, lon, current_list):
+    if not n_clicks or not name or lat is None or lon is None:
+        return dash.no_update, dash.no_update
+    user_id=session.get('user_id', None)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO Attractions (Name, Latitude, Longitude, Creator_User_ID, Last_Updated_User_ID) VALUES (%s, %s, %s, %s, %s)", (name, lat, lon, user_id, user_id))
+    new_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    current_list.append({'id': new_id, 'name': name})
+    return current_list, {'display': 'none'}
+
+# Отображение списка выбранных достопримечательностей с кнопками управления
+@app.callback(
+    Output('selected-attrs-list', 'children'),
+    Input('selected-attrs-store', 'data')
+)
+def render_selected_attrs(data):
+    if not data:
+        return html.P("Нет добавленных достопримечательностей")
+    items = []
+    for i, item in enumerate(data):
+        items.append(html.Div([
+            html.Span(f"{i+1}. {item['name']} (ID: {item['id']})"),
+            html.Button('↑', id={'type': 'move-attr-up', 'index': i}, disabled=i==0),
+            html.Button('↓', id={'type': 'move-attr-down', 'index': i}, disabled=i==len(data)-1),
+            html.Button('Удалить', id={'type': 'remove-attr', 'index': i})
+        ], style={'margin': '5px'}))
+    return html.Div(items)
+
+# Перемещение элементов вверх/вниз и удаление
+@app.callback(
+    Output('selected-attrs-store', 'data', allow_duplicate=True),
+    Input({'type': 'move-attr-up', 'index': ALL}, 'n_clicks'),
+    Input({'type': 'move-attr-down', 'index': ALL}, 'n_clicks'),
+    Input({'type': 'remove-attr', 'index': ALL}, 'n_clicks'),
+    State('selected-attrs-store', 'data'),
+    prevent_initial_call=True
+)
+def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+    triggered = ctx.triggered[0]
+    prop_id = triggered['prop_id']
+    idx = json.loads(prop_id.split('.')[0])['index']
+    n_clicks = triggered['value']
+    if not n_clicks:
+        return dash.no_update
+
+    if 'move-attr-up' in prop_id:
+        if idx > 0:
+            data[idx], data[idx-1] = data[idx-1], data[idx]
+    elif 'move-attr-down' in prop_id:
+        if idx < len(data) - 1:
+            data[idx], data[idx+1] = data[idx+1], data[idx]
+    elif 'remove-attr' in prop_id:
+        del data[idx]
+    return data
+
+# Построение вариантов маршрута через OSRM (использует текущий список selected-attrs-store для порядка)
+@app.callback(
+    Output('osrm-options-map', 'figure'),
+    Output('osrm-variants-store', 'data'),
+    Output('select-osrm-variant', 'options'),
+    Input('build-osrm-btn', 'n_clicks'),
+    State({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value'),
+    State({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value'),
+    State({'type': 'route-field', 'name': 'End_Point_Latitude'}, 'value'),
+    State({'type': 'route-field', 'name': 'End_Point_Longitude'}, 'value'),
+    State('selected-attrs-store', 'data'),
+    prevent_initial_call=True
+)
+def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, selected_attrs):
+    if not n_clicks or None in [start_lat, start_lon, end_lat, end_lon]:
+        return dash.no_update, dash.no_update, []
+    # Координаты: начальная точка -> достопримечательности (по порядку) -> конечная
+    points = [(start_lon, start_lat)]
+    if selected_attrs:
+        # Получаем координаты выбранных достопримечательностей
+        ids = [item['id'] for item in selected_attrs]
+        conn = mysql.connector.connect(**DB_CONFIG)
+        placeholders = ','.join(['%s'] * len(ids))
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(f"SELECT Attraction_ID, Longitude, Latitude FROM Attractions WHERE Attraction_ID IN ({placeholders})", ids)
+        attr_map = {row['Attraction_ID']: (float(row['Longitude']), float(row['Latitude'])) for row in cursor.fetchall()}
+        conn.close()
+        for item in selected_attrs:
+            coord = attr_map.get(item['id'])
+            if coord:
+                points.append(coord)
+    points.append((end_lon, end_lat))
+
+    coords_str = ";".join(f"{lon},{lat}" for lon, lat in points)
+    url = f"https://router.project-osrm.org/route/v1/driving/{coords_str}"
+    try:
+        resp = requests.get(url, params={
+            "alternatives": 3,
+            "geometries": "geojson",
+            "overview": "full",
+            "steps": "false"
+        }, timeout=10)
+        data = resp.json()
+        if data['code'] != 'Ok':
+            fig = go.Figure()
+            fig.add_annotation(text="Ошибка OSRM", showarrow=False)
+            return fig, [], []
+        routes = data['routes']
+        fig = go.Figure()
+        colors = ['purple', 'yellow', 'black', 'pink']
+        options = []
+        for i, route in enumerate(routes):
+            geom = route['geometry']
+            lons, lats = zip(*geom['coordinates'])
+            fig.add_trace(go.Scattermapbox(
+                lat=lats, lon=lons, mode='lines',
+                line=dict(color=colors[i % len(colors)], width=3),
+                name=f'Вариант {i+1}'
+            ))
+            options.append({'label': f'Вариант {i+1}', 'value': i})
+        # Маркеры точек
+        fig.add_trace(go.Scattermapbox(
+            lat=[p[1] for p in points], lon=[p[0] for p in points],
+            mode='markers', marker=dict(size=10, color='red'),
+            name='Точки'
+        ))
+        fig.update_layout(mapbox_style="open-street-map",
+                          mapbox_zoom=10,
+                          mapbox_center_lat=sum(p[1] for p in points)/len(points),
+                          mapbox_center_lon=sum(p[0] for p in points)/len(points))
+        return fig, [json.dumps(r['geometry']) for r in routes], options
+    except Exception as e:
+        fig = go.Figure()
+        fig.add_annotation(text=f"Ошибка: {e}", showarrow=False)
+        return fig, [], []
+
+# Сохранение маршрута (включая геометрию и связь с достопримечательностями)
+@app.callback(
+    Output('route-save-status', 'children'),
+    Input('save-route-btn', 'n_clicks'),
+    State('edit-route-id', 'data'),
+    State({'type': 'route-field', 'name': ALL}, 'value'),
+    State({'type': 'route-field', 'name': ALL}, 'id'),
+    State('select-osrm-variant', 'value'),
+    State('osrm-variants-store', 'data'),
+    State('selected-attrs-store', 'data'),
+    prevent_initial_call=True
+)
+def save_route(n_clicks, route_id, values, ids, variant_idx, variants, selected_attrs):
+    if not n_clicks:
+        return ""
+    data = {}
+    # Создаём словарь метаданных для быстрого поиска (исправление ошибки)
+    meta_dict = {m['name']: m for m in ROUTE_META}
+    for val, id_dict in zip(values, ids):
+        col_name = id_dict['name']
+        col_meta = meta_dict.get(col_name)  # <-- теперь корректно
+        if val is None or val == '':
+            if col_meta and col_meta['is_foreign']:
+                data[col_name] = None
+            continue
+        if col_meta:
+            dtype = col_meta['data_type'].lower()
+            if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint'):
+                data[col_name] = int(val)
+            elif dtype in ('decimal', 'float', 'double'):
+                data[col_name] = float(val)
+            elif dtype in ('datetime', 'timestamp'):
+                try:
+                    data[col_name] = datetime.strptime(val, '%Y-%m-%dT%H:%M')
+                except:
+                    data[col_name] = val
+            else:
+                data[col_name] = str(val)
+        else:
+            data[col_name] = val
+
+    # Геометрия
+    route_geom = None
+    if variants and variant_idx is not None and isinstance(variant_idx, int):
+        route_geom = variants[variant_idx]
+
+    user_id = session.get('user_id', None)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    try:
+        if route_id:
+            data['Last_Updated_User_ID'] = user_id
+            data['Last_Updated'] = datetime.now()
+            if route_geom:
+                data['route_geometry'] = route_geom
+            set_clause = ", ".join([f"{k} = %s" for k in data.keys()])
+            cursor.execute(f"UPDATE Routes SET {set_clause} WHERE Route_ID = %s",
+                           list(data.values()) + [route_id])
+        else:
+            data['Creator_User_ID'] = user_id
+            data['Last_Updated_User_ID'] = user_id
+            data['Created'] = datetime.now()
+            data['Last_Updated'] = datetime.now()
+            if route_geom:
+                data['route_geometry'] = route_geom
+            columns = ", ".join(data.keys())
+            placeholders = ", ".join(["%s"] * len(data))
+            cursor.execute(f"INSERT INTO Routes ({columns}) VALUES ({placeholders})", list(data.values()))
+            route_id = cursor.lastrowid
+
+        # Обновляем связи с достопримечательностями
+        cursor.execute("DELETE FROM Routes_Attractions WHERE Route_ID = %s", (route_id,))
+        for i, attr in enumerate(selected_attrs, start=1):
+            cursor.execute("INSERT INTO Routes_Attractions (Route_ID, Attraction_ID, Number) VALUES (%s, %s, %s)",
+                           (route_id, attr['id'], i))
+
+        conn.commit()
+        return f"Маршрут сохранён (ID: {route_id})"
+    except Error as e:
+        return f"Ошибка сохранения: {e}"
+    finally:
+        conn.close()
+
+# ================== СПРАВОЧНИКИ  ==================
+
+def get_table_info(table_name):
+    """Возвращает primary_key и список столбцов (для справочников нужны только ID и Name)."""
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(f"SHOW KEYS FROM {table_name} WHERE Key_name = 'PRIMARY'")
+    pk_row = cursor.fetchone()
+    pk = pk_row['Column_name'] if pk_row else None
+    cursor.execute(f"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+                   (DB_CONFIG['database'], table_name))
+    cols = [row['COLUMN_NAME'] for row in cursor.fetchall()]
+    conn.close()
+    return pk, cols
+
+@app.callback(
+    Output('dict-list-container', 'children'),
+    Input('dict-type-select', 'value')
+)
+def load_dict_list(table_name):
+    if not table_name:
+        return "Выберите справочник"
+    pk, cols = get_table_info(table_name)
+    name_col = 'Name' if 'Name' in cols else cols[1]
+    extra_cols = [c for c in cols if c not in (pk, name_col, 'Deleted')]
+
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        query = f"SELECT {pk}, {name_col}"
+        if extra_cols:
+            query += ", " + ", ".join(extra_cols)
+        query += f" FROM {table_name} WHERE Deleted = 0"
+        df = pd.read_sql(query, conn)
+        conn.close()
+
+        if df.empty:
+            return html.Div("Нет записей")
+
+        items = []
+        for _, row in df.iterrows():
+            display_text = f"{row[name_col]} (ID: {row[pk]})"
+            if 'Object_Type_ID' in extra_cols and 'Object_Type_ID' in row:
+                try:
+                    conn2 = mysql.connector.connect(**DB_CONFIG)
+                    obj_type = pd.read_sql(
+                        "SELECT Name FROM Object_Types WHERE Object_Type_ID = %s AND Deleted = 0",
+                        conn2, params=(row['Object_Type_ID'],)
+                    )
+                    if not obj_type.empty:
+                        display_text += f" [Тип: {obj_type.iloc[0,0]}]"
+                    conn2.close()
+                except:
+                    pass
+            items.append(html.Div([
+                html.Span(display_text),
+                html.Button('Удалить', id={'type': 'dict-delete', 'table': table_name, 'id': row[pk]}),
+                html.Button('Редактировать', id={'type': 'dict-edit', 'table': table_name, 'id': row[pk]})
+            ], style={'margin': '5px'}))
+        return html.Ul(items)
+    except Error as e:
+        return f"Ошибка: {e}"
+
+
+@app.callback(
+    Output('dict-list-container', 'children', allow_duplicate=True),
+    Input({'type': 'dict-delete', 'table': ALL, 'id': ALL}, 'n_clicks'),
+    State('dict-type-select', 'value'),
+    prevent_initial_call=True
+)
+def delete_dict_entry(n_clicks_list, table_name):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    triggered = ctx.triggered[0]
+    if not triggered['value']:
+        return dash.no_update
+
+    triggered_prop = triggered['prop_id']
+    if 'dict-delete' not in triggered_prop:
+        return dash.no_update
+
+    try:
+        props = json.loads(triggered_prop.split('.')[0])
+        table = props['table']
+        rec_id = props['id']
+    except (json.JSONDecodeError, KeyError):
+        return dash.no_update
+
+    pk, _ = get_table_info(table)
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE {table} SET Deleted = 1 WHERE {pk} = %s", (rec_id,))
+    conn.commit()
+    conn.close()
+    return load_dict_list(table_name)
+
+
+@app.callback(
+    Output('dict-edit-form', 'children'),
+    Input({'type': 'dict-edit', 'table': ALL, 'id': ALL}, 'n_clicks'),
+    Input('dict-add-btn', 'n_clicks'),
+    State('dict-type-select', 'value'),
+    prevent_initial_call=True
+)
+def show_dict_edit_form(edit_clicks, add_clicks, table_name):
+    ctx = callback_context
+    if not ctx.triggered:
+        return dash.no_update
+
+    triggered = ctx.triggered[0]
+    triggered_prop = triggered['prop_id']
+    pk, cols = get_table_info(table_name)
+    name_col = 'Name' if 'Name' in cols else cols[1]
+    has_description = 'Description' in cols
+    has_object_type = 'Object_Type_ID' in cols
+
+    # --- Добавление новой записи ---
+    if 'dict-add-btn' in triggered_prop and add_clicks:
+        fields = [
+            dcc.Store(id='dict-edit-id', data=None),
+            html.Label("Название"),
+            dcc.Input(id='dict-name-input', type='text'),
+            html.Div([
+                html.Label("Описание"),
+                dcc.Textarea(          # для авторов/владельцев – многострочное поле
+                    id='dict-description-input',
+                    style={'width': '100%', 'height': 100}
+                )
+            ], style={'display': 'block' if has_description else 'none'}),
+            html.Div([
+                html.Label("Тип объекта"),
+                dcc.Dropdown(id='dict-object-type-id', placeholder="Выберите тип объекта")
+            ], style={'display': 'block' if has_object_type else 'none'}),
+        ]
+        if has_object_type:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn)
+            conn.close()
+            options = obj_df.to_dict('records')
+            fields[4] = html.Div([
+                html.Label("Тип объекта"),
+                dcc.Dropdown(id='dict-object-type-id', options=options, placeholder="Выберите тип объекта")
+            ])
+        # Кнопки Сохранить и Отмена
+        fields.append(html.Div([
+            html.Button('Сохранить', id='dict-save-btn'),
+            html.Button('Отмена', id='dict-cancel-btn', style={'margin-left': '10px'})
+        ]))
+        return html.Div(fields)
+
+    # --- Редактирование существующей записи ---
+    elif 'dict-edit' in triggered_prop and triggered['value']:
+        try:
+            props = json.loads(triggered_prop.split('.')[0])
+            table = props['table']
+            rec_id = props['id']
+        except (json.JSONDecodeError, KeyError):
+            return dash.no_update
+
+        columns_to_select = [pk, name_col]
+        if has_description:
+            columns_to_select.append("Description")
+        if has_object_type:
+            columns_to_select.append("Object_Type_ID")
+
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql(
+            f"SELECT {', '.join(columns_to_select)} FROM {table} WHERE {pk} = %s AND Deleted = 0",
+            conn, params=(rec_id,)
+        )
+        conn.close()
+        if df.empty:
+            return html.Div("Запись не найдена")
+
+        row = df.iloc[0]
+        name = row[name_col]
+
+        children = [
+            dcc.Store(id='dict-edit-id', data={'table': table, 'id': rec_id, 'pk': pk}),
+            html.Label("Название"),
+            dcc.Input(id='dict-name-input', type='text', value=name),
+            html.Div([
+                html.Label("Описание"),
+                dcc.Textarea(
+                    id='dict-description-input',
+                    value=row.get('Description', '') if has_description else '',
+                    style={'width': '100%', 'height': 100}
+                )
+            ], style={'display': 'block' if has_description else 'none'}),
+            html.Div([
+                html.Label("Тип объекта"),
+                dcc.Dropdown(id='dict-object-type-id', placeholder="Выберите тип объекта")
+            ], style={'display': 'block' if has_object_type else 'none'}),
+        ]
+        if has_object_type:
+            current_obj_id = row.get('Object_Type_ID', None)
+            conn = mysql.connector.connect(**DB_CONFIG)
+            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn)
+            conn.close()
+            options = obj_df.to_dict('records')
+            children[4] = html.Div([
+                html.Label("Тип объекта"),
+                dcc.Dropdown(id='dict-object-type-id', options=options, value=current_obj_id)
+            ])
+
+        children.append(html.Div([
+            html.Button('Сохранить', id='dict-save-btn'),
+            html.Button('Отмена', id='dict-cancel-btn', style={'margin-left': '10px'})
+        ]))
+        return html.Div(children)
+
+    return dash.no_update
+
+
+@app.callback(
+    Output('dict-edit-form', 'children', allow_duplicate=True),
+    Input('dict-cancel-btn', 'n_clicks'),
+    prevent_initial_call=True
+)
+def cancel_dict_edit(n_clicks):
+    """Очищает форму редактирования при нажатии Отмена."""
+    if n_clicks:
+        return html.Div()
+    return dash.no_update
+
+
+@app.callback(
+    Output('dict-list-container', 'children', allow_duplicate=True),
+    Output('dict-edit-form', 'children', allow_duplicate=True),
+    Input('dict-save-btn', 'n_clicks'),
+    State('dict-edit-id', 'data'),
+    State('dict-name-input', 'value'),
+    State('dict-description-input', 'value'),
+    State('dict-object-type-id', 'value'),
+    State('dict-type-select', 'value'),
+    prevent_initial_call=True
+)
+def save_dict_record(n_clicks, edit_data, name, description, object_type_id, table_name):
+    if not n_clicks or not name:
+        return dash.no_update, dash.no_update
+
+    pk, cols = get_table_info(table_name)
+    name_col = 'Name' if 'Name' in cols else cols[1]
+    has_description = 'Description' in cols
+    has_object_type = 'Object_Type_ID' in cols
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    try:
+        if edit_data:
+            set_parts = [f"{name_col} = %s"]
+            params = [name]
+            if has_description:
+                set_parts.append("Description = %s")
+                params.append(description)
+            if has_object_type:
+                set_parts.append("Object_Type_ID = %s")
+                params.append(object_type_id)
+            params.append(edit_data['id'])
+            cursor.execute(
+                f"UPDATE {table_name} SET {', '.join(set_parts)} WHERE {edit_data['pk']} = %s AND Deleted = 0",
+                params
+            )
+        else:
+            columns = [name_col]
+            placeholders = ["%s"]
+            params = [name]
+            if has_description:
+                columns.append("Description")
+                placeholders.append("%s")
+                params.append(description)
+            if has_object_type:
+                columns.append("Object_Type_ID")
+                placeholders.append("%s")
+                params.append(object_type_id)
+            columns.append("Deleted")
+            placeholders.append("0")
+            cursor.execute(
+                f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
+                params
+            )
+        conn.commit()
+    except Error as e:
+        return f"Ошибка сохранения: {e}", dash.no_update
+    finally:
+        conn.close()
+    # Обновляем список и очищаем форму
+    return load_dict_list(table_name), html.Div()
+
+#=========== Главный колбэк: переключение страниц и генерация контента ===============
 @app.callback(
     Output('main-page-layout', 'style'),
     Output('attraction-page-layout', 'style'),
     Output('login-page-layout', 'style'),
     Output('admin-register-page-layout', 'style'),
+    Output('admin-page-layout', 'style'),
     Output('attraction-content-holder', 'children'),
     Output('url', 'pathname', allow_duplicate=True),
     Input('map-graph', 'clickData'),
@@ -617,6 +1891,7 @@ def display_page(clickData, route_id, pathname, n_clicks):
     else:
         triggered_id=''
 
+    hide_all = {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
     main_style={'display':'none'}
     atttr_style={'display':'none'}
     login_style={'display':'none'}
@@ -624,14 +1899,19 @@ def display_page(clickData, route_id, pathname, n_clicks):
     
     if triggered_id == "back-to-main-btn":
         if route_id is not None:
-            return {'display':'block'}, {'display':'none'},{'display':'none'},{'display':'none'}, None, f"/?route_id={route_id}"
+            return {'display':'block'}, {'display':'none'},{'display':'none'},{'display':'none'},{'display':'none'}, None, f"/?route_id={route_id}"
         else:
-            return {'display':'block'}, {'display':'none'},{'display':'none'}, {'display':'none'}, None, "/"
+            return {'display':'block'}, {'display':'none'},{'display':'none'}, {'display':'none'},{'display':'none'}, None, "/"
 
     if pathname == '/logout':
         session.clear()
-        return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
+        return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, "/"
 
+    if pathname == '/admin':
+        if session.get('role') != 'admin':
+            return {'display': 'block'}, {'display':'none'},{'display':'none'},{'display':'none'},{'display':'none'}, None, "/"
+        return {'display':'none'},{'display':'none'},{'display':'none'},{'display':'none'},{'display':'block'}, None, pathname
+    
 
     # Клик по карте → страница достопримечательности
     if triggered_id == "map-graph":
@@ -644,23 +1924,23 @@ def display_page(clickData, route_id, pathname, n_clicks):
             if attraction_id and isinstance(attraction_id, int):
                 #pathname = f"/attraction/{attraction_id}"
                 #return {'display':'none'}, {'display':'block'}, None, f"/attraction/{attraction_id}"
-                 return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, None, f"/attraction/{attraction_id}"   
+                 return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, f"/attraction/{attraction_id}"   
             
     
     # Страница логина
     if pathname == '/login':
-        return {'display': 'none'}, {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, None, pathname
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'block'}, {'display': 'none'},{'display':'none'}, None, pathname
 
     # Регистрация (только админ)
     if pathname == '/admin/register':
         if session.get('role') != 'admin':
             # Нет прав — перенаправляем на главную
-            return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
-        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'block'}, None, pathname
+            return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, "/"
+        return {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'block'},{'display':'none'}, None, pathname
     
     # Если URL пустой или '/', показываем главную страницу
     if pathname is None or pathname == '/' or pathname == '':
-        return {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'}, None, "/"
+        return {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'},{'display':'none'}, None, "/"
 
     # Если URL начинается с '/attraction/', пытаемся показать страницу достопримечательности
     if pathname.startswith('/attraction/'):
@@ -678,22 +1958,54 @@ def display_page(clickData, route_id, pathname, n_clicks):
                 conn = mysql.connector.connect(**DB_CONFIG)
                 
                 # --- ЗАПРОС 1: Данные о достопримечательности ---
+##                query_attr = """
+##                SELECT ot.Name as Object_Type_Name,
+##                c.Name as Category_Name,
+##                a.*
+##                FROM Attractions a
+##                JOIN Object_Types ot ON a.Object_Type_ID = ot.Object_Type_ID
+##                JOIN Categories c ON a.Category_ID = c.Category_ID
+##                WHERE a.Attraction_ID = %s;
+##                """
                 query_attr = """
-                SELECT ot.Name as Object_Type_Name,
-                c.Name as Category_Name,
-                a.*
-                FROM Attractions a
-                JOIN Object_Types ot ON a.Object_Type_ID = ot.Object_Type_ID
-                JOIN Categories c ON a.Category_ID = c.Category_ID
-                WHERE a.Attraction_ID = %s;
-                """
+                    SELECT 
+                        a.*,
+                        ot.Name as Object_Type_Name,
+                        c.Name as Category_Name,
+                        ov.Name as Object_Value_Name,
+                        ovs.Name as Object_Value_Status_Name,
+                        tc.Name as Technical_Condition_Name,
+                        os.Name as Object_Status_Name,
+                        cp.Name as Creation_Purpose_Name,
+                        aut.Name as Author_Name,
+                        aut.Description as Author_Description,
+                        own.Name as Owner_Name,
+                        own.Description as Owner_Description,
+                        g.Name as Geomorphology_Name,
+                        rp.Name as Recreation_Potential_Name,
+                        s.Name as Season_Name
+                    FROM Attractions a
+                    LEFT JOIN Object_Types ot ON a.Object_Type_ID = ot.Object_Type_ID
+                    LEFT JOIN Categories c ON a.Category_ID = c.Category_ID
+                    LEFT JOIN Object_Values ov ON a.Object_Value_ID = ov.Object_Value_ID
+                    LEFT JOIN Object_Value_Statuses ovs ON a.Object_Value_Status_ID = ovs.Object_Value_Status_ID
+                    LEFT JOIN Technical_Conditions tc ON a.Technical_Condition_ID = tc.Technical_Condition_ID
+                    LEFT JOIN Object_Statuses os ON a.Object_Status_ID = os.Object_Status_ID
+                    LEFT JOIN Creation_Purposes cp ON a.Creation_Purpose_ID = cp.Creation_Purpose_ID
+                    LEFT JOIN Authors aut ON a.Author_ID = aut.Author_ID
+                    LEFT JOIN Owners own ON a.Owner_ID = own.Owner_ID
+                    LEFT JOIN Geomorphologies g ON a.Geomorphology_ID = g.Geomorphology_ID
+                    LEFT JOIN Recreation_Potentials rp ON a.Recreation_Potential_ID = rp.Recreation_Potential_ID
+                    LEFT JOIN Seasons s ON a.Season_ID = s.Season_ID
+                    WHERE a.Attraction_ID = %s;
+                    """
                 attr_df = pd.read_sql(query_attr, conn, params=(attraction_id,), dtype=object)
                 
                 if attr_df.empty:
                     #error_msg = html.Div("Достопримечательность не найдена.", style={'color': 'red'})
             
                     #return {'display': 'none'}, {'display': 'block'}, error_msg, dash.no_update
-                    return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, html.Div("Достопримечательность не найдена."), pathname
+                    return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, html.Div("Достопримечательность не найдена."), pathname
                 
                 row_attr = attr_df.iloc[0]
                 
@@ -726,6 +2038,51 @@ def display_page(clickData, route_id, pathname, n_clicks):
                 
                 if not media_content:
                     media_content = [html.P("Медиа-контент отсутствует.")]
+
+                aliases = {
+                'Name': 'Название достопримечательности',
+                'Object_Type_Name': 'Тип объекта',
+                'Category_Name': 'Категория',
+                'Description': 'Описание',
+                'Admin_Location_ID': 'Административное расположение',
+                'Latitude': 'Широта',
+                'Longitude': 'Долгота',
+                'Accessibility': 'Способы проезда (Доступность)',
+                'City_Distance': 'Расстояние от ключевой точки',
+                'History': 'Историческая справка',
+                'Legends': 'Легенды',
+                'Object_Value_Name': 'Значимость',
+                'Object_Value_Status_Name': 'Статус значимости',
+                'Object_Value_Description': 'Описание значимости',
+                'Modernity': 'Благоустройство',
+                'Recreation_Potential_Name': 'Рекреационный потенциал',
+                'Recreation_Potential_Description': 'Описание рекреационного потенциала',
+                'Season_Name': 'Сезон',
+                'Time_Recommendation': 'Рекомендуемая длительность визита',
+                'Visitor_Requirements': 'Требования к посетителю',
+                'Rules': 'Правила',
+                'Guides': 'Гиды',
+                'Price': 'Цена',
+                'Relief': 'Рельеф',
+                'Geomorphology_Name': 'Геоморфология',
+                'Geologic': 'Геологическое строение',
+                'Climate': 'Климат',
+                'Hydrology': 'Гидрология',
+                'Flora_Fauna': 'Флора и фауна',
+                'Ecologic': 'Экология',
+                'Creation_Date': 'Дата создания',
+                'Author_Name': 'Автор',
+                'Author_Description': 'Об авторе',
+                'Style_Architecture': 'Архитектурный стиль',
+                'Materials_and_Technologies': 'Материалы и технологии',
+                'Creation_Purpose_Name': 'Цель создания',
+                'Technical_Condition_Name': 'Техническое состояние',
+                'Object_Status_Name': 'Статус объекта',
+                'Owner_Name': 'Владелец',
+                'Owner_Description': 'О владельце',
+                'Restoration_Works': 'Реставрационные работы',
+                'TCI': 'Климатический индекс'
+            }
                 
                 # --- СОБИРАЕМ HTML ДЛЯ СТРАНИЦЫ ДОСТОПРИМЕЧАТЕЛЬНОСТИ ---
                 
@@ -736,13 +2093,22 @@ def display_page(clickData, route_id, pathname, n_clicks):
                 object_type = row_attr.get("Object_Type_ID")
                 
                 for col in attr_df.columns:
-                    if col in ['Attraction_ID', 'Latitude', 'Longitude', 'Object_Type_ID', 'Category_ID']:
+                    if col in ['Deleted','Attraction_ID', 'Latitude', 'Longitude'] or "_ID" in col and col not in ["Admin_Location_ID", "Key_City_ID"]:#, 'Object_Type_ID', 'Category_ID']:
                         continue
                     value = row_attr.get(col)
-                    display_name = col.replace('_', ' ')
+                    display_name = aliases.get(col, col.replace('_', ' ').title())
                     if col == "Admin_Location_ID":
-                        display_name = "Admin Location"
-                        value = bring_address(conn.cursor(dictionary=True),value)
+                        display_name = "Административное расположение"
+                        if value is not None and value != '':
+                            value = bring_address(conn.cursor(dictionary=True), value)
+                        else:
+                            continue
+                    elif col == "Key_City_ID":
+                        display_name = "Ключевая точка"
+                        if value is not None and value != '':
+                            value = bring_address(conn.cursor(dictionary=True), value)
+                        else:
+                            continue
                     #Convert IDs to exact values
 
                     
@@ -753,18 +2119,22 @@ def display_page(clickData, route_id, pathname, n_clicks):
 
                     if object_type == "1":
                         fields_to_hide_for_natural = [
-                            'Creation Date', 'Author', 'Style Architecture', 'Materials And Technologies',
-                            'Creation Purpose', 'Technical Condition', 'Object Status', 'Owner', 'Restoration Works'
-                        ]
-                        if display_name in fields_to_hide_for_natural:
+                            'Creation_Date', 'Author_Name', 'Author_Description',
+                                                  'Style_Architecture', 'Materials_and_Technologies',
+                                                  'Creation_Purpose_Name', 'Technical_Condition_Name',
+                                                  'Object_Status_Name', 'Owner_Name', 'Owner_Description',
+                                                  'Restoration_Works'
+
+                            ]
+                        if col in fields_to_hide_for_natural:
                             continue # Пропускаем итерацию, не добавляем это поле
 
                     # --- УСЛОВИЕ 2: ЕСЛИ ОБЪЕКТ АНТРОПОГЕННЫЙ ---
                     if object_type == "2":
                         fields_to_hide_for_anthropogenic = [
-                            'Geomorphology', 'Geologic', 'Climate', 'Hydrology', 'Flora Fauna', 'Ecologic'
+                            'Relief','Geomorphology_Name', 'Geologic', 'Climate', 'Hydrology', 'Flora_Fauna', 'Ecologic'
                         ]
-                        if display_name in fields_to_hide_for_anthropogenic:
+                        if col in fields_to_hide_for_anthropogenic:
                             continue # Пропускаем итерацию
 
                     # 4. Проверка на пустое значение (исправленная логика)
@@ -818,17 +2188,17 @@ def display_page(clickData, route_id, pathname, n_clicks):
                     ])
                 ])
                 
-                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'}, full_attraction_page_html, pathname
+                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'},{'display':'none'}, full_attraction_page_html, pathname
 
             except Error as e:
                 error_msg = html.Div(f"Ошибка базы данных: {e}", style={'color': 'red'})
-                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'}, error_msg, pathname
+                return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'},{'display':'none'}, error_msg, pathname
             finally:
                 if 'conn' in locals() and conn.is_connected():
                     conn.close()
     
     # Если URL не распознан, показываем главную страницу (или можно показать 404)
-    return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, None, "/"
+    return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, "/"
 
 
 
@@ -836,4 +2206,4 @@ def display_page(clickData, route_id, pathname, n_clicks):
 
 
 if __name__ == '__main__':
-    app.run_server(debug=True)
+    app.run_server(debug=os.getenv('DEBUG', 'False').lower() == 'true')
