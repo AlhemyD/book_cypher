@@ -1449,7 +1449,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
     points.append((end_lon, end_lat))
 
     coords_str = ";".join(f"{lon},{lat}" for lon, lat in points)
-    url = f"https://router.project-osrm.org/route/v1/driving/{coords_str}"
+    url = f"https://router.project-osrm.org/route/v1/car/{coords_str}"
     try:
         resp = requests.get(url, params={
             "alternatives": 3,
