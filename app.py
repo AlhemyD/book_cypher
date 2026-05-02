@@ -1441,9 +1441,9 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
     if not n_clicks or None in [start_lat, start_lon, end_lat, end_lon]:
         return dash.no_update, dash.no_update, [], dash.no_update
 
-    # Формируем упорядоченный список точек в формате (lon, lat)
+    # ---- 1. Сбор точек в порядке: старт → достопримечательности → финиш ----
     points = [(start_lon, start_lat)]
-    attr_names = []  # для подписей
+    attr_names = []
     if selected_attrs:
         ids = [item['id'] for item in selected_attrs]
         conn = mysql.connector.connect(**DB_CONFIG)
@@ -1455,7 +1455,6 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         )
         rows = cursor.fetchall()
         conn.close()
-        # Сохраняем порядок как в selected_attrs
         attr_dict = {row['Attraction_ID']: row for row in rows}
         for item in selected_attrs:
             row = attr_dict.get(item['id'])
@@ -1463,87 +1462,101 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
                 points.append((float(row['Longitude']), float(row['Latitude'])))
                 attr_names.append(row['Name'])
             else:
-                # Если вдруг нет в БД, используем имя из хранилища
-                points.append((0, 0))  # заглушка, лучше пропустить
+                points.append((0, 0))
                 attr_names.append(item.get('name', '?'))
     points.append((end_lon, end_lat))
 
-    # Формируем строку координат для OSRM
-    coords_str = ";".join(f"{lon},{lat}" for lon, lat in points)
-
-    # Здесь можно переключить на GraphHopper, заменив URL и параметры
-    url = f"https://router.project-osrm.org/route/v1/driving/{coords_str}"
-    try:
-        resp = requests.get(url, params={
-            "alternatives": 3,          # до 3 альтернатив
-            "geometries": "geojson",
-            "overview": "full",
-            "steps": "false"
-        }, timeout=10)
-        data = resp.json()
-        if data['code'] != 'Ok':
-            fig = go.Figure()
-            fig.add_annotation(text="Ошибка OSRM", showarrow=False)
-            return fig, [], [], dash.no_update
-
-        routes = data['routes']
+    # ---- 2. Запрос к GraphHopper для двух профилей ----
+    api_key = os.getenv('GRAPHHOPPER_API_KEY')
+    if not api_key:
         fig = go.Figure()
-        colors = ['blue', 'green', 'purple', 'orange']  # цвета вариантов
-        options = []
-        for i, route in enumerate(routes):
-            geom = route['geometry']
-            lons, lats = zip(*geom['coordinates'])
-            fig.add_trace(go.Scattermapbox(
-                lat=lats, lon=lons, mode='lines',
-                line=dict(color=colors[i % len(colors)], width=4),
-                name=f'Вариант {i+1}',
-                hoverinfo='skip'
-            ))
-            options.append({'label': f'Вариант {i+1}', 'value': i})
-
-        # Маркеры точек: Старт (зелёный), Финиш (оранжевый), достопримечательности (красные с номерами)
-        # Формируем подписи
-        labels = ['Старт']
-        if attr_names:
-            for idx, name in enumerate(attr_names, start=1):
-                labels.append(f'{idx}. {name}')
-        labels.append('Финиш')
-
-        for i, (lon, lat) in enumerate(points):
-            color = 'green' if i == 0 else 'orange' if i == len(points)-1 else 'red'
-            marker_size = 12
-            fig.add_trace(go.Scattermapbox(
-                lat=[lat],
-                lon=[lon],
-                mode='markers+text',
-                text=[labels[i]],
-                textposition='top center',
-                textfont=dict(size=10, color='black'),
-                marker=dict(size=marker_size, color=color),
-                hovertemplate=f"<b>{labels[i]}</b><br>Широта: %{{lat}}<br>Долгота: %{{lon}}<extra></extra>",
-                showlegend=False 
-            ))
-
-        fig.update_layout(
-            mapbox_style="open-street-map",
-            mapbox_zoom=10,
-            mapbox_center_lat=sum(p[1] for p in points)/len(points),
-            mapbox_center_lon=sum(p[0] for p in points)/len(points),
-            margin={"r":0,"t":0,"l":0,"b":0},
-            legend=dict(
-                y=-0.1,               
-                yanchor='top',
-                orientation='h'       
-            )
-        )
-
-        # Сохраняем геометрии как JSON-строки для последующего использования
-        return fig, [json.dumps(r['geometry']) for r in routes], options, 0   # выбираем первый вариант
-
-    except Exception as e:
-        fig = go.Figure()
-        fig.add_annotation(text=f"Ошибка: {e}", showarrow=False)
+        fig.add_annotation(text="Ошибка: не задан GRAPHHOPPER_API_KEY", showarrow=False)
         return fig, [], [], dash.no_update
+
+    # Преобразуем точки в параметр `point`
+    point_params = "&point=".join([f"{lat},{lon}" for lon, lat in points])
+    base_url = "https://graphhopper.com/api/1/route"
+
+    all_routes = []          # список словарей { 'geometry': GeoJSON LineString, 'label': str }
+    variants_geom = []       # для сохранения в osrm-variants-store
+    options = []             # для RadioItems
+
+    for profile, profile_label in [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]:
+        url = (f"{base_url}?point={point_params}&vehicle={profile}"
+               f"&locale=ru&key={api_key}"
+               f"&alternative_route.max_paths=4"   # до 2 альтернатив на профиль
+               f"&instructions=false&points_encoded=false")
+        try:
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            if 'paths' not in data:
+                print(f"GraphHopper ({profile}): {data.get('message', 'нет маршрутов')}")
+                continue
+            paths = data['paths']
+            for i, path in enumerate(paths, start=1):
+                coords = path['points']['coordinates']   # [[lng, lat], ...]
+                geom = {"type": "LineString", "coordinates": coords}
+                label = f"{profile_label}, вариант {i}"
+                all_routes.append({'geometry': geom, 'label': label})
+                variants_geom.append(json.dumps(geom))
+                options.append({'label': label, 'value': len(options)})
+        except Exception as e:
+            print(f"Ошибка запроса к GraphHopper ({profile}): {e}")
+            continue
+
+    if not all_routes:
+        fig = go.Figure()
+        fig.add_annotation(text="Не удалось построить ни одного маршрута", showarrow=False)
+        return fig, [], [], dash.no_update
+
+    # ---- 3. Отрисовка карты ----
+    fig = go.Figure()
+    colors = ['blue', 'green', 'purple', 'orange', 'cyan', 'magenta']
+    for idx, route in enumerate(all_routes):
+        geom = route['geometry']
+        lons, lats = zip(*geom['coordinates'])
+        fig.add_trace(go.Scattermapbox(
+            lat=lats, lon=lons, mode='lines',
+            line=dict(color=colors[idx % len(colors)], width=4),
+            name=route['label'],
+            hoverinfo='skip'
+        ))
+
+    # Маркеры точек (старт, финиш, достопримечательности с номерами)
+    labels = ['Старт']
+    if attr_names:
+        for idx, name in enumerate(attr_names, start=1):
+            labels.append(f'{idx}. {name}')
+    labels.append('Финиш')
+
+    for i, (lon, lat) in enumerate(points):
+        color = 'green' if i == 0 else 'orange' if i == len(points)-1 else 'red'
+        size = 12 if i in (0, len(points)-1) else 10
+        fig.add_trace(go.Scattermapbox(
+            lat=[lat], lon=[lon],
+            mode='markers+text',
+            text=[labels[i]],
+            textposition='top center',
+            textfont=dict(size=10, color='black'),
+            marker=dict(size=size, color=color),
+            hovertemplate=f"<b>{labels[i]}</b><br>Широта: %{{lat}}<br>Долгота: %{{lon}}<extra></extra>",
+            showlegend=False
+        ))
+
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox_zoom=10,
+        mapbox_center_lat=sum(p[1] for p in points)/len(points),
+        mapbox_center_lon=sum(p[0] for p in points)/len(points),
+        margin={"r":0,"t":0,"l":0,"b":0},
+        legend=dict(
+            y=-0.1,
+            yanchor='top',
+            orientation='h'
+        )
+    )
+
+    return fig, variants_geom, options, 0   # первый вариант выбран по умолчанию
 
 # Сохранение маршрута (включая геометрию и связь с достопримечательностями)
 @app.callback(
