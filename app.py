@@ -480,11 +480,11 @@ def filter_routes_by_location(selected_location_id, stored_routes_data):
 @app.callback(
     Output('route-dropdown', 'value'),
     Input('url', 'href'),
-    State('route-dropdown', 'options'), # Чтобы не срабатывало до загрузки списка
+    Input('route-dropdown', 'options')
 )
 def set_dropdown_value_from_url(href, options):
     if not options or not href:
-        return None
+        return dash.no_update
 
     parsed_url = urllib.parse.urlparse(href)
     query_params = urllib.parse.parse_qs(parsed_url.query)
@@ -500,7 +500,7 @@ def set_dropdown_value_from_url(href, options):
                 
         except ValueError:
             pass
-    return None
+    return dash.no_update
 
 # 4. Главная функция: обновляем карту и информацию при выборе маршрута
 @app.callback(
@@ -574,8 +574,13 @@ def update_map_and_info(selected_route_id, geo_data):
     attractions_df = route_points_df[
         (route_points_df['Attraction_Name'] != 'Старт маршрута') & 
         (route_points_df['Attraction_Name'] != 'Финиш маршрута')
-    ]
+    ].copy()
+
+    # Сортируем по порядку в маршруте (Number)
+    attractions_df = attractions_df.sort_values('Stop_Number')
     
+    customdata = attractions_df[['Attraction_ID', 'Attraction_Name']].copy()
+    customdata['Number'] = range(1, len(customdata) + 1)  # порядковые номера
     # Точки (маркеры)
     fig.add_trace(go.Scattermapbox(
         lat=attractions_df['lat'],
@@ -584,13 +589,16 @@ def update_map_and_info(selected_route_id, geo_data):
 
         text = attractions_df["Attraction_Name"],
 
-        customdata=attractions_df["Attraction_ID"],
+        customdata=customdata.values,
         # --- НАСТРОЙКА ПОДСКАЗОК (TOOLTIP) ---
-        hovertemplate="<b>ID: %{customdata}</b><br>" +
-                      "<br>%{text}<br>"+
-                      "Широта: %{lat}<br>" +
-                      "Долгота: %{lon}<br>" +
-                      "<extra></extra>",
+        hovertemplate=(
+            "<b>№ %{customdata[2]}</b><br>" +  
+            "%{customdata[1]}<br>" +           
+            "ID: %{customdata[0]}<br>" +       
+            "Широта: %{lat}<br>" +
+            "Долгота: %{lon}<br>" +
+            "<extra></extra>"
+        ),
         
         marker=dict(size=12, color='red'),
         name='Достопримечательности',
@@ -1420,6 +1428,7 @@ def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
     Output('osrm-options-map', 'figure'),
     Output('osrm-variants-store', 'data'),
     Output('select-osrm-variant', 'options'),
+    Output('select-osrm-variant', 'value'),
     Input('build-osrm-btn', 'n_clicks'),
     State({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value'),
     State({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value'),
@@ -1430,29 +1439,43 @@ def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
 )
 def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, selected_attrs):
     if not n_clicks or None in [start_lat, start_lon, end_lat, end_lon]:
-        return dash.no_update, dash.no_update, []
-    # Координаты: начальная точка -> достопримечательности (по порядку) -> конечная
+        return dash.no_update, dash.no_update, [], dash.no_update
+
+    # Формируем упорядоченный список точек в формате (lon, lat)
     points = [(start_lon, start_lat)]
+    attr_names = []  # для подписей
     if selected_attrs:
-        # Получаем координаты выбранных достопримечательностей
         ids = [item['id'] for item in selected_attrs]
         conn = mysql.connector.connect(**DB_CONFIG)
         placeholders = ','.join(['%s'] * len(ids))
         cursor = conn.cursor(dictionary=True)
-        cursor.execute(f"SELECT Attraction_ID, Longitude, Latitude FROM Attractions WHERE Attraction_ID IN ({placeholders})", ids)
-        attr_map = {row['Attraction_ID']: (float(row['Longitude']), float(row['Latitude'])) for row in cursor.fetchall()}
+        cursor.execute(
+            f"SELECT Attraction_ID, Longitude, Latitude, Name FROM Attractions WHERE Attraction_ID IN ({placeholders})",
+            ids
+        )
+        rows = cursor.fetchall()
         conn.close()
+        # Сохраняем порядок как в selected_attrs
+        attr_dict = {row['Attraction_ID']: row for row in rows}
         for item in selected_attrs:
-            coord = attr_map.get(item['id'])
-            if coord:
-                points.append(coord)
+            row = attr_dict.get(item['id'])
+            if row:
+                points.append((float(row['Longitude']), float(row['Latitude'])))
+                attr_names.append(row['Name'])
+            else:
+                # Если вдруг нет в БД, используем имя из хранилища
+                points.append((0, 0))  # заглушка, лучше пропустить
+                attr_names.append(item.get('name', '?'))
     points.append((end_lon, end_lat))
 
+    # Формируем строку координат для OSRM
     coords_str = ";".join(f"{lon},{lat}" for lon, lat in points)
-    url = f"https://router.project-osrm.org/route/v1/car/{coords_str}"
+
+    # Здесь можно переключить на GraphHopper, заменив URL и параметры
+    url = f"https://router.project-osrm.org/route/v1/driving/{coords_str}"
     try:
         resp = requests.get(url, params={
-            "alternatives": 3,
+            "alternatives": 3,          # до 3 альтернатив
             "geometries": "geojson",
             "overview": "full",
             "steps": "false"
@@ -1461,35 +1484,66 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         if data['code'] != 'Ok':
             fig = go.Figure()
             fig.add_annotation(text="Ошибка OSRM", showarrow=False)
-            return fig, [], []
+            return fig, [], [], dash.no_update
+
         routes = data['routes']
         fig = go.Figure()
-        colors = ['purple', 'yellow', 'black', 'pink']
+        colors = ['blue', 'green', 'purple', 'orange']  # цвета вариантов
         options = []
         for i, route in enumerate(routes):
             geom = route['geometry']
             lons, lats = zip(*geom['coordinates'])
             fig.add_trace(go.Scattermapbox(
                 lat=lats, lon=lons, mode='lines',
-                line=dict(color=colors[i % len(colors)], width=3),
-                name=f'Вариант {i+1}'
+                line=dict(color=colors[i % len(colors)], width=4),
+                name=f'Вариант {i+1}',
+                hoverinfo='skip'
             ))
             options.append({'label': f'Вариант {i+1}', 'value': i})
-        # Маркеры точек
-        fig.add_trace(go.Scattermapbox(
-            lat=[p[1] for p in points], lon=[p[0] for p in points],
-            mode='markers', marker=dict(size=10, color='red'),
-            name='Точки'
-        ))
-        fig.update_layout(mapbox_style="open-street-map",
-                          mapbox_zoom=10,
-                          mapbox_center_lat=sum(p[1] for p in points)/len(points),
-                          mapbox_center_lon=sum(p[0] for p in points)/len(points))
-        return fig, [json.dumps(r['geometry']) for r in routes], options
+
+        # Маркеры точек: Старт (зелёный), Финиш (оранжевый), достопримечательности (красные с номерами)
+        # Формируем подписи
+        labels = ['Старт']
+        if attr_names:
+            for idx, name in enumerate(attr_names, start=1):
+                labels.append(f'{idx}. {name}')
+        labels.append('Финиш')
+
+        for i, (lon, lat) in enumerate(points):
+            color = 'green' if i == 0 else 'orange' if i == len(points)-1 else 'red'
+            marker_size = 12
+            fig.add_trace(go.Scattermapbox(
+                lat=[lat],
+                lon=[lon],
+                mode='markers+text',
+                text=[labels[i]],
+                textposition='top center',
+                textfont=dict(size=10, color='black'),
+                marker=dict(size=marker_size, color=color),
+                hovertemplate=f"<b>{labels[i]}</b><br>Широта: %{{lat}}<br>Долгота: %{{lon}}<extra></extra>",
+                showlegend=False 
+            ))
+
+        fig.update_layout(
+            mapbox_style="open-street-map",
+            mapbox_zoom=10,
+            mapbox_center_lat=sum(p[1] for p in points)/len(points),
+            mapbox_center_lon=sum(p[0] for p in points)/len(points),
+            margin={"r":0,"t":0,"l":0,"b":0},
+            legend=dict(
+                y=-0.1,               
+                yanchor='top',
+                orientation='h'       
+            )
+        )
+
+        # Сохраняем геометрии как JSON-строки для последующего использования
+        return fig, [json.dumps(r['geometry']) for r in routes], options, 0   # выбираем первый вариант
+
     except Exception as e:
         fig = go.Figure()
         fig.add_annotation(text=f"Ошибка: {e}", showarrow=False)
-        return fig, [], []
+        return fig, [], [], dash.no_update
 
 # Сохранение маршрута (включая геометрию и связь с достопримечательностями)
 @app.callback(
@@ -1877,9 +1931,10 @@ def save_dict_record(n_clicks, edit_data, name, description, object_type_id, tab
     Input('route-dropdown','value'),
     Input('url', 'pathname'),
     Input('back-to-main-btn', 'n_clicks'),
+    Input('url','href'),
     prevent_initial_call=True
 )
-def display_page(clickData, route_id, pathname, n_clicks):
+def display_page(clickData, route_id, pathname, n_clicks, href):
     """Управляет видимостью страниц и генерирует контент для страницы достопримечательности."""
 
     ctx = callback_context
@@ -1896,13 +1951,16 @@ def display_page(clickData, route_id, pathname, n_clicks):
     atttr_style={'display':'none'}
     login_style={'display':'none'}
     admin_reg_style={'display':'none'}
+
+    parsed_url = urllib.parse.urlparse(href)
+    query_params = urllib.parse.parse_qs(parsed_url.query)         
     
     if triggered_id == "back-to-main-btn":
-        if route_id is not None:
+        if route_id is not None and "route_id" not in query_params:
             return {'display':'block'}, {'display':'none'},{'display':'none'},{'display':'none'},{'display':'none'}, None, f"/?route_id={route_id}"
         else:
             return {'display':'block'}, {'display':'none'},{'display':'none'}, {'display':'none'},{'display':'none'}, None, "/"
-
+    
     if pathname == '/logout':
         session.clear()
         return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, "/"
@@ -1919,12 +1977,12 @@ def display_page(clickData, route_id, pathname, n_clicks):
             point = clickData.get('points',[{}])[0]
 
             # Проверяем, что клик был по достопримечательности (у нее есть ID)
-            attraction_id = point.get('customdata')
+            attraction_id = point.get('customdata')[0]
             
             if attraction_id and isinstance(attraction_id, int):
-                #pathname = f"/attraction/{attraction_id}"
+                pathname = f"/attraction/{attraction_id}"
                 #return {'display':'none'}, {'display':'block'}, None, f"/attraction/{attraction_id}"
-                 return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, f"/attraction/{attraction_id}"   
+                # return {'display': 'none'}, {'display': 'block'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, f"/attraction/{attraction_id}"   
             
     
     # Страница логина
