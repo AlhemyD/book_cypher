@@ -13,6 +13,8 @@ from flask import send_from_directory
 import uuid
 import json, requests
 from datetime import datetime
+import qrcode
+import io
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -507,9 +509,10 @@ def set_dropdown_value_from_url(href, options):
     Output('map-graph', 'figure'),
     Output('route-info-container', 'children'),
     Input('route-dropdown', 'value'),
-    Input('routes-data-store', 'data')
+    Input('routes-data-store', 'data'),
+    Input('url', 'href')
 )
-def update_map_and_info(selected_route_id, geo_data):
+def update_map_and_info(selected_route_id, geo_data, href):
     """Обновляет карту и блок информации при выборе маршрута."""
     
     # Сброс состояния, если маршрут не выбран
@@ -756,7 +759,56 @@ def update_map_and_info(selected_route_id, geo_data):
     finally:
         if conn.is_connected():
             conn.close()
-             
+    qr_block = html.Div()
+    if selected_route_id and href:
+        try:
+            parsed = urllib.parse.urlparse(href)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            route_url = f"{base_url}?route_id={selected_route_id}"
+
+            # Генерируем QR-код
+            qr = qrcode.QRCode(version=1, box_size=6, border=2)
+            qr.add_data(route_url)
+            qr.make(fit=True)
+            qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+            # Создаём новое изображение с местом для текста
+            from PIL import ImageDraw, ImageFont, Image
+            width, height = qr_img.size
+            # Добавляем снизу 30 пикселей для подписи
+            new_height = height + 30
+            combined = Image.new("RGB", (width, new_height), "white")
+            combined.paste(qr_img, (0, 0))
+
+            # Рисуем текст
+            draw = ImageDraw.Draw(combined)
+            # Используем стандартный шрифт, т.к. системный может отсутствовать
+            try:
+                font = ImageFont.truetype("arial.ttf", 12)
+            except:
+                font = ImageFont.load_default()
+            # Получим ширину текста для центрирования
+            text = route_url
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_x = (width - text_width) // 2
+            draw.text((text_x, height + 5), text, fill="black", font=font)
+
+            # Конвертируем в base64
+            buffer = io.BytesIO()
+            combined.save(buffer, format="PNG")
+            img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+            qr_block = html.Div([
+                html.Img(src=f"data:image/png;base64,{img_str}", style={"width": "160px", "display": "block", "margin": "0 auto"})
+            ], style={"textAlign": "center", "marginBottom": "20px"})
+        except Exception as e:
+            qr_block = html.Div(f"Ошибка QR-кода: {e}")
+
+    # Размещаем QR-код перед остальной информацией
+    info_html = html.Div([qr_block, info_html])
+    
+       
     return fig, info_html
 
 ### Колбэк для навигации по клику на карту (меняет URL)
@@ -2259,6 +2311,50 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     ])
                 ])
                 
+
+                # Генерация QR-кода
+                qr_block = html.Div()
+                if attraction_id and href:
+                    try:
+                        parsed = urllib.parse.urlparse(href)
+                        base_url = f"{parsed.scheme}://{parsed.netloc}"
+                        attraction_url = f"{base_url}/attraction/{attraction_id}"
+
+                        qr = qrcode.QRCode(version=1, box_size=6, border=2)
+                        qr.add_data(attraction_url)
+                        qr.make(fit=True)
+                        qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+                        from PIL import ImageDraw, ImageFont, Image
+                        width, height = qr_img.size
+                        new_height = height + 30
+                        combined = Image.new("RGB", (width, new_height), "white")
+                        combined.paste(qr_img, (0, 0))
+
+                        draw = ImageDraw.Draw(combined)
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 12)
+                        except:
+                            font = ImageFont.load_default()
+                        text = attraction_url
+                        bbox = draw.textbbox((0, 0), text, font=font)
+                        text_width = bbox[2] - bbox[0]
+                        text_x = (width - text_width) // 2
+                        draw.text((text_x, height + 5), text, fill="black", font=font)
+
+                        buffer = io.BytesIO()
+                        combined.save(buffer, format="PNG")
+                        img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+                        qr_block = html.Div([
+                            html.Img(src=f"data:image/png;base64,{img_str}", style={"width": "160px", "display": "block", "margin": "0 auto"})
+                        ], style={"textAlign": "center", "marginBottom": "20px"})
+                    except Exception as e:
+                        qr_block = html.Div(f"Ошибка QR-кода: {e}")
+
+                # Добавляем QR-код в начало страницы
+                full_attraction_page_html = html.Div([qr_block, full_attraction_page_html])
+
                 return {'display': 'none'}, {'display': 'block'},{'display': 'none'}, {'display': 'none'},{'display':'none'}, full_attraction_page_html, pathname
 
             except Error as e:
