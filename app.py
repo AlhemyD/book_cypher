@@ -253,6 +253,56 @@ app.layout = html.Div([
             value=1 # По умолчанию ID 1 (Россия)
         ),
     ], style={'width': '50%', 'margin': 'auto', 'padding': '20px'}),
+    html.Div([
+        html.Label("Фильтр по достопримечательностям:"),
+        dcc.Dropdown(
+            id='attraction-filter',
+            placeholder="Выберите достопримечательности...",
+            multi=True,
+            clearable=True,
+            options=[]
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+
+    html.Div([
+        html.Label("Тип маршрута:"),
+        dcc.Dropdown(
+            id='route-type-filter',
+            placeholder="Любой",
+            clearable=True,
+            options=[]
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+
+    html.Div([
+        html.Label("Сложность:"),
+        dcc.Dropdown(
+            id='difficulty-filter',
+            placeholder="Любая",
+            clearable=True,
+            options=[]
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+
+    html.Div([
+        html.Label("Сезон:"),
+        dcc.Dropdown(
+            id='season-filter',
+            placeholder="Любой",
+            clearable=True,
+            options=[]
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
+
+    html.Div([
+        html.Label("Тема маршрута:"),
+        dcc.Dropdown(
+            id='route-theme-filter',
+            placeholder="Любая",
+            clearable=True,
+            options=[]
+        ),
+    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
     
     html.Div([
         html.Label("Выберите маршрут:"),
@@ -411,70 +461,95 @@ def load_routes_data(_):
         if conn.is_connected():
             conn.close()
 
-# 2. Загружаем данные о маршрутах И фильтруем их по выбранной локации
+# 2. Загружаем данные о маршрутах И фильтруем
 @app.callback(
     Output('route-dropdown', 'options'),
-    Output('routes-meta-store', 'data'), # Сохраняем отфильтрованные данные
+    Output('routes-meta-store', 'data'),
     Input('location-filter', 'value'),
-    Input('routes-meta-store', 'data'), # Используем как State, чтобы не загружать заново
+    Input('attraction-filter', 'value'),
+    Input('route-type-filter', 'value'),
+    Input('difficulty-filter', 'value'),
+    Input('season-filter', 'value'),
+    Input('route-theme-filter', 'value')
 )
-def filter_routes_by_location(selected_location_id, stored_routes_data):
-    # Если данные уже есть в хранилище, используем их, чтобы не делать лишний запрос
-    if stored_routes_data and selected_location_id:
-        df_routes = pd.DataFrame(stored_routes_data)
-    else:
-        # Если данных нет, загружаем их из БД
-        try:
-            conn = mysql.connector.connect(**DB_CONFIG)
-            query = "SELECT Route_ID, Name, Admin_Location_ID FROM Routes;"
-            df_routes = pd.read_sql(query, conn)
-        except Error as e:
-            print(f"Ошибка при загрузке маршрутов: {e}")
-            return [], None
-    
-    if df_routes.empty:
-        return [], None
-
-    # --- ФИЛЬТРАЦИЯ ---
-    # Находим саму выбранную локацию и всех её "детей" (подчиненные районы, села)
+def filter_routes(selected_location_id, selected_attrs, selected_route_type,
+                  selected_difficulty, selected_season, selected_theme):
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
-        
-        # Запрос для поиска всех подчиненных локаций (включая саму себя)
-        query_locations = """
-        WITH RECURSIVE loc_tree AS (
-            SELECT Admin_Location_ID FROM Admin_Location WHERE Admin_Location_ID = %s
-            UNION ALL
-            SELECT al.Admin_Location_ID 
-            FROM Admin_Location al
-            INNER JOIN loc_tree lt ON al.Parent_ID = lt.Admin_Location_ID
-        )
-        SELECT Admin_Location_ID FROM loc_tree;
-        """
-        loc_df = pd.read_sql(query_locations, conn, params=(selected_location_id,))
-        
-        # Если запрос к локациям прошел успешно, фильтруем маршруты
-        if not loc_df.empty:
-            valid_location_ids = loc_df['Admin_Location_ID'].tolist()
-            
-            # Фильтруем маршруты, у которых Admin_Location_ID есть в списке найденных локаций
-            filtered_routes = df_routes[df_routes['Admin_Location_ID'].isin(valid_location_ids)]
-            
-            options = [
-                {'label': row['Name'], 'value': row['Route_ID']}
-                for _, row in filtered_routes.iterrows()
-            ]
-            
-            return options, filtered_routes.to_dict('records')
-            
+        query = "SELECT Route_ID, Name, Admin_Location_ID, Route_Type_ID, Difficulty_ID, Season_ID, Route_Theme_ID FROM Routes WHERE Deleted = 0"
+        df_routes = pd.read_sql(query, conn)
+        conn.close()
     except Error as e:
-        print(f"Ошибка при фильтрации по локации: {e}")
-    
-    # Если что-то пошло не так или фильтрация не удалась, показываем все маршруты
-    options = [
-        {'label': row['Name'], 'value': row['Route_ID']}
-        for _, row in df_routes.iterrows()
-    ]
+        print(f"Ошибка загрузки маршрутов: {e}")
+        return [], []
+
+    if df_routes.empty:
+        return [], []
+
+    # 1. Фильтр по локации
+    if selected_location_id:
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            query_locations = """
+            WITH RECURSIVE loc_tree AS (
+                SELECT Admin_Location_ID FROM Admin_Location WHERE Admin_Location_ID = %s
+                UNION ALL
+                SELECT al.Admin_Location_ID FROM Admin_Location al
+                INNER JOIN loc_tree lt ON al.Parent_ID = lt.Admin_Location_ID
+            )
+            SELECT Admin_Location_ID FROM loc_tree;
+            """
+            loc_df = pd.read_sql(query_locations, conn, params=(selected_location_id,))
+            conn.close()
+            if not loc_df.empty:
+                valid_ids = loc_df['Admin_Location_ID'].tolist()
+                df_routes = df_routes[df_routes['Admin_Location_ID'].isin(valid_ids)]
+        except Error as e:
+            print(f"Ошибка фильтрации локации: {e}")
+
+    # 2. Фильтр по достопримечательностям (AND – маршрут должен содержать ВСЕ выбранные)
+    if selected_attrs and len(selected_attrs) > 0:
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            placeholders = ','.join(['%s'] * len(selected_attrs))
+            query_attr = f"""
+                SELECT ra.Route_ID
+                FROM Routes_Attractions ra
+                JOIN Attractions a ON ra.Attraction_ID = a.Attraction_ID
+                WHERE a.Attraction_ID IN ({placeholders}) AND a.Deleted = 0
+                GROUP BY ra.Route_ID
+                HAVING COUNT(DISTINCT ra.Attraction_ID) = %s
+            """
+            df_attr = pd.read_sql(query_attr, conn, params=selected_attrs + [len(selected_attrs)])
+            conn.close()
+            if not df_attr.empty:
+                route_ids = df_attr['Route_ID'].tolist()
+                df_routes = df_routes[df_routes['Route_ID'].isin(route_ids)]
+            else:
+                return [], []
+        except Error as e:
+            print(f"Ошибка фильтра достопримечательностей: {e}")
+
+    # 3. Тип маршрута
+    if selected_route_type:
+        df_routes = df_routes[df_routes['Route_Type_ID'] == selected_route_type]
+
+    # 4. Сложность
+    if selected_difficulty:
+        df_routes = df_routes[df_routes['Difficulty_ID'] == selected_difficulty]
+
+    # 5. Сезон
+    if selected_season:
+        df_routes = df_routes[df_routes['Season_ID'] == selected_season]
+
+    # 6. Тема
+    if selected_theme:
+        df_routes = df_routes[df_routes['Route_Theme_ID'] == selected_theme]
+
+    if df_routes.empty:
+        return [], []
+
+    options = [{'label': row['Name'], 'value': row['Route_ID']} for _, row in df_routes.iterrows()]
     return options, df_routes.to_dict('records')
 
 
@@ -811,24 +886,72 @@ def update_map_and_info(selected_route_id, geo_data, href):
        
     return fig, info_html
 
-### Колбэк для навигации по клику на карту (меняет URL)
-##@app.callback(
-##    Output('url', 'pathname'),
-##    Input('map-graph', 'clickData'),
-##    Input('route-dropdown','value'),
-##    prevent_initial_call=True
-##)
-##def navigate_on_click(clickData, route_id):
-##    if clickData:
-##        point = clickData.get('points', [{}])[0]
-##        
-##        # Проверяем, что клик был по достопримечательности (у нее есть ID)
-##        attraction_id = point.get('customdata')
-##        
-##        if attraction_id and isinstance(attraction_id, int):
-##            return f"/attraction/{attraction_id}"
-##            
-##    return dash.no_update
+# === ФИЛЬТРЫ ===
+
+@app.callback(
+    Output('attraction-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_attraction_filter(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT Attraction_ID AS value, Name AS label FROM Attractions WHERE Deleted = 0 ORDER BY Name", conn)
+        conn.close()
+        return df.to_dict('records')
+    except:
+        return []
+
+@app.callback(
+    Output('route-type-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_route_type_options(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT Route_Type_ID AS value, Name AS label FROM Route_Types WHERE Deleted = 0 ORDER BY Name", conn)
+        conn.close()
+        return df.to_dict('records')
+    except:
+        return []
+
+@app.callback(
+    Output('difficulty-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_difficulty_options(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT Difficulty_ID AS value, Name AS label FROM Difficulties WHERE Deleted = 0 ORDER BY Name", conn)
+        conn.close()
+        return df.to_dict('records')
+    except:
+        return []
+
+@app.callback(
+    Output('season-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_season_options(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT Season_ID AS value, Name AS label FROM Seasons WHERE Deleted = 0 ORDER BY Name", conn)
+        conn.close()
+        return df.to_dict('records')
+    except:
+        return []
+
+@app.callback(
+    Output('route-theme-filter', 'options'),
+    Input('url', 'pathname')
+)
+def load_route_theme_options(_):
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        df = pd.read_sql("SELECT Route_Theme_ID AS value, Name AS label FROM Route_Themes WHERE Deleted = 0 ORDER BY Name", conn)
+        conn.close()
+        return df.to_dict('records')
+    except:
+        return []
 
 
 
