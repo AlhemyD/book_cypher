@@ -1611,7 +1611,7 @@ def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
     Output('select-osrm-variant', 'options'),
     Output('select-osrm-variant', 'value'),
     Output('osrm-status', 'children'),
-    Output('osrm-options-map', 'key'),          # динамический ключ для сброса кэша
+    Output('osrm-options-map', 'key'),
     Input('build-osrm-btn', 'n_clicks'),
     Input({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value'),
     Input({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value'),
@@ -1625,8 +1625,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
     if not n_clicks:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "", dash.no_update
 
-    # Формируем ключ перерисовки (меняется при каждом клике)
-    key = str(n_clicks)
+    key = str(n_clicks)  # динамический ключ для сброса кэша
 
     # --- Проверка входных данных ---
     if None in [start_lat, start_lon, end_lat, end_lon]:
@@ -1641,7 +1640,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
                            showarrow=False, font=dict(size=14))
         return fig, [], [], None, "⚠️ Нет промежуточных точек", key
 
-    # --- Сбор точек ---
+    # --- Сбор точек в порядке: старт, все выбранные, финиш ---
     points = [(start_lon, start_lat)]
     attr_names = []
     try:
@@ -1670,56 +1669,64 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
 
     points.append((end_lon, end_lat))
 
-    # --- Запрос к GraphHopper ---
-    api_key = os.getenv('GRAPHHOPPER_API_KEY')
-    if not api_key:
-        fig = go.Figure()
-        fig.add_annotation(text="Не указан GraphHopper API ключ",
-                           showarrow=False, font=dict(size=14, color='red'))
-        return fig, [], [], None, "❌ Отсутствует API-ключ GraphHopper", key
-
-    point_params = "&point=".join([f"{lat},{lon}" for lon, lat in points])
-    base_url = "https://graphhopper.com/api/1/route"
+    # --- Запросы к OSRM (автомобиль и пешком) ---
+    # Используем публичный сервер OSRM (демо)
+    base_url = "https://router.project-osrm.org/route/v1"
     all_routes = []
     variants_geom = []
     options = []
     errors = []
 
+    # Формируем строку координат для OSRM: lng,lat;lng,lat;...
+    coords_str = ";".join([f"{lon},{lat}" for lon, lat in points])
+
     for profile, profile_label in [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]:
-        url = (f"{base_url}?point={point_params}&vehicle={profile}"
-               f"&locale=ru&key={api_key}"
-               f"&alternative_route.max_paths=2"
-               f"&instructions=false&points_encoded=false")
+        url = (f"{base_url}/{profile}/{coords_str}"
+               f"?alternatives=3"          # до 3 альтернативных маршрутов
+               f"&overview=full"
+               f"&geometries=geojson"
+               f"&steps=false")
         try:
             resp = requests.get(url, timeout=15)
+            if resp.status_code != 200:
+                errors.append(f"{profile_label}: HTTP {resp.status_code}")
+                continue
             data = resp.json()
-            if 'paths' in data:
-                for i, path in enumerate(data['paths'], start=1):
-                    coords = path['points']['coordinates']
-                    geom = {"type": "LineString", "coordinates": coords}
-                    label = f"{profile_label}, вариант {i}"
-                    all_routes.append({'geometry': geom, 'label': label})
-                    variants_geom.append(json.dumps(geom))
-                    options.append({'label': label, 'value': len(options)})
-            else:
-                errors.append(f"{profile_label}: {data.get('message', 'нет маршрутов')}")
+            if data.get("code") != "Ok" or "routes" not in data:
+                errors.append(f"{profile_label}: {data.get('message', 'нет ответа')}")
+                continue
+            routes = data["routes"]
+            if not routes:
+                errors.append(f"{profile_label}: маршрутов не найдено")
+                continue
+            # Обрабатываем все полученные маршруты (обычно 1, если alternatives=0, но мы запросили до 3)
+            for i, route in enumerate(routes, start=1):
+                geom = route.get("geometry")
+                if not geom or "coordinates" not in geom:
+                    continue
+                # OSRM выдает координаты в формате [lng, lat]
+                label = f"{profile_label}, вариант {i}"
+                all_routes.append({'geometry': geom, 'label': label})
+                variants_geom.append(json.dumps(geom))
+                options.append({'label': label, 'value': len(options)})
         except Exception as e:
             errors.append(f"{profile_label}: {e}")
 
-    # Если ни одного маршрута не построено – показываем сообщение на карте
+    # --- Если ни одного маршрута не найдено ---
     if not all_routes:
         fig = go.Figure()
         msg = "Маршрутов не найдено.\n" + "\n".join(errors) if errors else "Маршрутов не найдено."
         fig.add_annotation(text=msg, showarrow=False, font=dict(size=14, color='red'))
-        status = f"❌ {msg}"
-        return fig, [], [], None, status, key
+        return fig, [], [], None, f"❌ {msg}", key
 
-    # --- Отрисовка маршрутов ---
+    # --- Отрисовка всех вариантов ---
     fig = go.Figure()
     colors = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan']
     for idx, route in enumerate(all_routes):
         geom = route['geometry']
-        lons, lats = zip(*geom['coordinates'])
+        # GeoJSON-координаты: список [lng, lat]
+        lons = [pt[0] for pt in geom['coordinates']]
+        lats = [pt[1] for pt in geom['coordinates']]
         fig.add_trace(go.Scattermapbox(
             lat=lats, lon=lons, mode='lines',
             line=dict(color=colors[idx % len(colors)], width=4),
@@ -1727,7 +1734,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             hoverinfo='skip'
         ))
 
-    # Точки старта/промежуточные/финиша
+    # Маркеры точек (старт, промежуточные, финиш)
     labels = ['Старт']
     for i, name in enumerate(attr_names, start=1):
         labels.append(f'{i}. {name}')
@@ -1756,7 +1763,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         legend=dict(y=-0.1, yanchor='top', orientation='h')
     )
 
-    status = f"✅ Построено {len(all_routes)} вариантов"
+    status = f"✅ Построено {len(all_routes)} вариантов (OSRM)"
     return fig, variants_geom, options, 0, status, key
 
 # Сохранение маршрута (включая геометрию и связь с достопримечательностями)
