@@ -422,7 +422,7 @@ def load_routes_data(_):
             'Старт маршрута' AS Attraction_Name,
             NULL AS Attraction_ID,
             0 AS Stop_Number 
-        FROM Routes r
+        FROM Routes r WHERE r.Deleted = 0
 
         UNION ALL
 
@@ -437,6 +437,7 @@ def load_routes_data(_):
         FROM Routes r
         JOIN Routes_Attractions ra ON r.Route_ID = ra.Route_ID
         JOIN Attractions a ON ra.Attraction_ID = a.Attraction_ID
+        WHERE r.Deleted = 0 and a.Deleted = 0
 
         UNION ALL
 
@@ -448,7 +449,7 @@ def load_routes_data(_):
             'Финиш маршрута',
             NULL,
             9999 
-        FROM Routes r
+        FROM Routes r WHERE r.Deleted = 0
 
         ORDER BY Route_ID, Stop_Number;
         """
@@ -763,7 +764,7 @@ def update_map_and_info(selected_route_id, geo_data, href):
     LEFT JOIN Difficulties d ON r.Difficulty_ID = d.Difficulty_ID
     LEFT JOIN Length_Time_Metrics ltm ON r.Length_Time_Metric_ID = ltm.Length_Time_Metric_ID
     LEFT JOIN Seasons s ON r.Season_ID = s.Season_ID
-    WHERE r.Route_ID = %s;
+    WHERE r.Route_ID = %s AND r.Deleted = 0;
     """#"SELECT * FROM Routes WHERE Route_ID = %s;"
         
         info_df = pd.read_sql(query, conn, params=(selected_route_id,), dtype=object)
@@ -1218,6 +1219,8 @@ def generate_attraction_form(attr_id):
         )
     ]))
     fields.append(html.Button('Сохранить', id='save-attraction-btn'))
+    if attr_id:
+        fields.append(html.Button('Удалить', id='delete-attraction-btn', style={'margin-left': '10px', 'background-color': 'red', 'color': 'white'}))
     fields.append(html.Div(id='attraction-save-status'))
     return html.Div(fields)
 
@@ -1446,9 +1449,12 @@ def generate_route_form(route_id):
 
     fields.append(html.Hr())
     fields.append(html.Button("Построить варианты маршрута", id='build-osrm-btn', n_clicks=0))
+    fields.append(html.Div(id='osrm-status'))
     fields.append(dcc.Graph(id='osrm-options-map', style={'height': '400px'}))
     fields.append(dcc.RadioItems(id='select-osrm-variant', options=[], value=None))
     fields.append(html.Button("Сохранить маршрут", id='save-route-btn'))
+    if route_id:
+        fields.append(html.Button('Удалить', id='delete-route-btn', style={'margin-left': '10px', 'background-color': 'red', 'color': 'white'}))
     fields.append(html.Div(id='route-save-status'))
 
     return html.Div(fields)
@@ -1604,89 +1610,113 @@ def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
     Output('osrm-variants-store', 'data'),
     Output('select-osrm-variant', 'options'),
     Output('select-osrm-variant', 'value'),
+    Output('osrm-status', 'children'),
+    Output('osrm-options-map', 'key'),          # динамический ключ для сброса кэша
     Input('build-osrm-btn', 'n_clicks'),
-    State({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value'),
-    State({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value'),
-    State({'type': 'route-field', 'name': 'End_Point_Latitude'}, 'value'),
-    State({'type': 'route-field', 'name': 'End_Point_Longitude'}, 'value'),
-    State('selected-attrs-store', 'data'),
+    Input({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value'),
+    Input({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value'),
+    Input({'type': 'route-field', 'name': 'End_Point_Latitude'}, 'value'),
+    Input({'type': 'route-field', 'name': 'End_Point_Longitude'}, 'value'),
+    Input('selected-attrs-store', 'data'),
     prevent_initial_call=True
 )
 def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, selected_attrs):
-    if not n_clicks or None in [start_lat, start_lon, end_lat, end_lon]:
-        return dash.no_update, dash.no_update, [], dash.no_update
+    # Если кнопка не нажималась – ничего не обновляем
+    if not n_clicks:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "", dash.no_update
 
-    # ---- 1. Сбор точек в порядке: старт → достопримечательности → финиш ----
+    # Формируем ключ перерисовки (меняется при каждом клике)
+    key = str(n_clicks)
+
+    # --- Проверка входных данных ---
+    if None in [start_lat, start_lon, end_lat, end_lon]:
+        fig = go.Figure()
+        fig.add_annotation(text="Пожалуйста, заполните координаты старта и финиша",
+                           showarrow=False, font=dict(size=14))
+        return fig, [], [], None, "⚠️ Не заполнены координаты", key
+
+    if not selected_attrs:
+        fig = go.Figure()
+        fig.add_annotation(text="Добавьте хотя бы одну достопримечательность",
+                           showarrow=False, font=dict(size=14))
+        return fig, [], [], None, "⚠️ Нет промежуточных точек", key
+
+    # --- Сбор точек ---
     points = [(start_lon, start_lat)]
     attr_names = []
-    if selected_attrs:
-        ids = [item['id'] for item in selected_attrs]
+    try:
         conn = mysql.connector.connect(**DB_CONFIG)
-        placeholders = ','.join(['%s'] * len(ids))
+        ids = [item['id'] for item in selected_attrs]
         cursor = conn.cursor(dictionary=True)
+        placeholders = ','.join(['%s'] * len(ids))
         cursor.execute(
-            f"SELECT Attraction_ID, Longitude, Latitude, Name FROM Attractions WHERE Attraction_ID IN ({placeholders})",
+            f"SELECT Attraction_ID, Longitude, Latitude, Name FROM Attractions "
+            f"WHERE Attraction_ID IN ({placeholders}) AND Deleted = 0",
             ids
         )
         rows = cursor.fetchall()
-        conn.close()
         attr_dict = {row['Attraction_ID']: row for row in rows}
         for item in selected_attrs:
             row = attr_dict.get(item['id'])
             if row:
                 points.append((float(row['Longitude']), float(row['Latitude'])))
                 attr_names.append(row['Name'])
-            else:
-                points.append((0, 0))
-                attr_names.append(item.get('name', '?'))
+        conn.close()
+    except Exception as e:
+        fig = go.Figure()
+        fig.add_annotation(text=f"Ошибка получения координат: {e}",
+                           showarrow=False, font=dict(size=14, color='red'))
+        return fig, [], [], None, f"❌ Ошибка получения координат: {e}", key
+
     points.append((end_lon, end_lat))
 
-    # ---- 2. Запрос к GraphHopper для двух профилей ----
+    # --- Запрос к GraphHopper ---
     api_key = os.getenv('GRAPHHOPPER_API_KEY')
     if not api_key:
         fig = go.Figure()
-        fig.add_annotation(text="Ошибка: не задан GRAPHHOPPER_API_KEY", showarrow=False)
-        return fig, [], [], dash.no_update
+        fig.add_annotation(text="Не указан GraphHopper API ключ",
+                           showarrow=False, font=dict(size=14, color='red'))
+        return fig, [], [], None, "❌ Отсутствует API-ключ GraphHopper", key
 
-    # Преобразуем точки в параметр `point`
     point_params = "&point=".join([f"{lat},{lon}" for lon, lat in points])
     base_url = "https://graphhopper.com/api/1/route"
-
-    all_routes = []          # список словарей { 'geometry': GeoJSON LineString, 'label': str }
-    variants_geom = []       # для сохранения в osrm-variants-store
-    options = []             # для RadioItems
+    all_routes = []
+    variants_geom = []
+    options = []
+    errors = []
 
     for profile, profile_label in [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]:
         url = (f"{base_url}?point={point_params}&vehicle={profile}"
                f"&locale=ru&key={api_key}"
-               f"&alternative_route.max_paths=4"   # до 2 альтернатив на профиль
+               f"&alternative_route.max_paths=2"
                f"&instructions=false&points_encoded=false")
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=15)
             data = resp.json()
-            if 'paths' not in data:
-                print(f"GraphHopper ({profile}): {data.get('message', 'нет маршрутов')}")
-                continue
-            paths = data['paths']
-            for i, path in enumerate(paths, start=1):
-                coords = path['points']['coordinates']   # [[lng, lat], ...]
-                geom = {"type": "LineString", "coordinates": coords}
-                label = f"{profile_label}, вариант {i}"
-                all_routes.append({'geometry': geom, 'label': label})
-                variants_geom.append(json.dumps(geom))
-                options.append({'label': label, 'value': len(options)})
+            if 'paths' in data:
+                for i, path in enumerate(data['paths'], start=1):
+                    coords = path['points']['coordinates']
+                    geom = {"type": "LineString", "coordinates": coords}
+                    label = f"{profile_label}, вариант {i}"
+                    all_routes.append({'geometry': geom, 'label': label})
+                    variants_geom.append(json.dumps(geom))
+                    options.append({'label': label, 'value': len(options)})
+            else:
+                errors.append(f"{profile_label}: {data.get('message', 'нет маршрутов')}")
         except Exception as e:
-            print(f"Ошибка запроса к GraphHopper ({profile}): {e}")
-            continue
+            errors.append(f"{profile_label}: {e}")
 
+    # Если ни одного маршрута не построено – показываем сообщение на карте
     if not all_routes:
         fig = go.Figure()
-        fig.add_annotation(text="Не удалось построить ни одного маршрута", showarrow=False)
-        return fig, [], [], dash.no_update
+        msg = "Маршрутов не найдено.\n" + "\n".join(errors) if errors else "Маршрутов не найдено."
+        fig.add_annotation(text=msg, showarrow=False, font=dict(size=14, color='red'))
+        status = f"❌ {msg}"
+        return fig, [], [], None, status, key
 
-    # ---- 3. Отрисовка карты ----
+    # --- Отрисовка маршрутов ---
     fig = go.Figure()
-    colors = ['blue', 'green', 'purple', 'orange', 'cyan', 'magenta']
+    colors = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan']
     for idx, route in enumerate(all_routes):
         geom = route['geometry']
         lons, lats = zip(*geom['coordinates'])
@@ -1697,11 +1727,10 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             hoverinfo='skip'
         ))
 
-    # Маркеры точек (старт, финиш, достопримечательности с номерами)
+    # Точки старта/промежуточные/финиша
     labels = ['Старт']
-    if attr_names:
-        for idx, name in enumerate(attr_names, start=1):
-            labels.append(f'{idx}. {name}')
+    for i, name in enumerate(attr_names, start=1):
+        labels.append(f'{i}. {name}')
     labels.append('Финиш')
 
     for i, (lon, lat) in enumerate(points):
@@ -1724,14 +1753,11 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         mapbox_center_lat=sum(p[1] for p in points)/len(points),
         mapbox_center_lon=sum(p[0] for p in points)/len(points),
         margin={"r":0,"t":0,"l":0,"b":0},
-        legend=dict(
-            y=-0.1,
-            yanchor='top',
-            orientation='h'
-        )
+        legend=dict(y=-0.1, yanchor='top', orientation='h')
     )
 
-    return fig, variants_geom, options, 0   # первый вариант выбран по умолчанию
+    status = f"✅ Построено {len(all_routes)} вариантов"
+    return fig, variants_geom, options, 0, status, key
 
 # Сохранение маршрута (включая геометрию и связь с достопримечательностями)
 @app.callback(
@@ -1815,6 +1841,54 @@ def save_route(n_clicks, route_id, values, ids, variant_idx, variants, selected_
         return f"Ошибка сохранения: {e}"
     finally:
         conn.close()
+
+@app.callback(
+    Output('attraction-edit-form', 'children', allow_duplicate=True),
+    Output('edit-attraction-id', 'data', allow_duplicate=True),
+    Output('attraction-select', 'options', allow_duplicate=True),
+    Input('delete-attraction-btn', 'n_clicks'),
+    State('edit-attraction-id', 'data'),
+    prevent_initial_call=True
+)
+def delete_attraction(n_clicks, attr_id):
+    if not n_clicks or not attr_id:
+        return dash.no_update, dash.no_update, dash.no_update
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Attractions SET Deleted = 1 WHERE Attraction_ID = %s", (attr_id,))
+        cursor.execute("DELETE FROM Routes_Attractions WHERE Attraction_ID = %s", (attr_id,))
+        conn.commit()
+        conn.close()
+        new_options = update_attraction_list(None)
+        return html.Div(), None, new_options
+    except Error as e:
+        print(f"Ошибка удаления: {e}")
+        return dash.no_update, dash.no_update, dash.no_update
+
+@app.callback(
+    Output('route-edit-form', 'children', allow_duplicate=True),
+    Output('edit-route-id', 'data', allow_duplicate=True),
+    Output('route-admin-select', 'options', allow_duplicate=True),
+    Input('delete-route-btn', 'n_clicks'),
+    State('edit-route-id', 'data'),
+    prevent_initial_call=True
+)
+def delete_route(n_clicks, route_id):
+    if not n_clicks or not route_id:
+        return dash.no_update, dash.no_update, dash.no_update
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE Routes SET Deleted = 1 WHERE Route_ID = %s", (route_id,))
+        cursor.execute("DELETE FROM Routes_Attractions WHERE Route_ID = %s", (route_id,))
+        conn.commit()
+        conn.close()
+        new_options = update_route_list(None)
+        return html.Div(), None, new_options
+    except Error as e:
+        print(f"Ошибка удаления маршрута: {e}")
+        return dash.no_update, dash.no_update, dash.no_update
 
 # ================== СПРАВОЧНИКИ  ==================
 
@@ -2243,7 +2317,7 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     LEFT JOIN Geomorphologies g ON a.Geomorphology_ID = g.Geomorphology_ID
                     LEFT JOIN Recreation_Potentials rp ON a.Recreation_Potential_ID = rp.Recreation_Potential_ID
                     LEFT JOIN Seasons s ON a.Season_ID = s.Season_ID
-                    WHERE a.Attraction_ID = %s;
+                    WHERE a.Attraction_ID = %s AND a.Deleted = 0;
                     """
                 attr_df = pd.read_sql(query_attr, conn, params=(attraction_id,), dtype=object)
                 
@@ -2260,7 +2334,7 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                 SELECT r.Route_ID, r.Name 
                 FROM Routes r 
                 JOIN Routes_Attractions ra ON r.Route_ID = ra.Route_ID 
-                WHERE ra.Attraction_ID = %s;
+                WHERE ra.Attraction_ID = %s and r.Deleted = 0;
                 """
                 routes_df = pd.read_sql(query_routes, conn, params=(attraction_id,))
                 
@@ -2334,6 +2408,9 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                 
                 # Блок с информацией о достопримечательности
                 attr_info_content = []
+
+                if row_attr.get('Deleted') == 1:
+                    return {'display': 'none'}, {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'}, html.Div("Достопримечательность не найдена."), pathname
 
                 # Получаем тип объекта из данных
                 object_type = row_attr.get("Object_Type_ID")
