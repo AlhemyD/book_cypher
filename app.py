@@ -2012,7 +2012,7 @@ def show_dict_edit_form(edit_clicks, add_clicks, table_name):
     pk, cols = get_table_info(table_name)
     name_col = 'Name' if 'Name' in cols else cols[1]
     has_description = 'Description' in cols
-    has_object_type = 'Object_Type_ID' in cols
+    has_object_type = 'Object_Type_ID' in cols and table_name.lower() != "object_types"
 
     # --- Добавление новой записи ---
     if 'dict-add-btn' in triggered_prop and add_clicks:
