@@ -15,6 +15,7 @@ import json, requests
 from datetime import datetime
 import qrcode
 import io
+from dash.exceptions import PreventUpdate
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -1226,12 +1227,17 @@ def update_attraction_list(search):
 
 def generate_attraction_form(attr_id):
     data = {}
+    media_list = []                     # <-- для хранения существующих медиа
     if attr_id:
         conn = mysql.connector.connect(**DB_CONFIG)
         query = "SELECT * FROM Attractions WHERE Attraction_ID = %s"
         df = pd.read_sql(query, conn, params=(attr_id,))
         if not df.empty:
             data = df.iloc[0].to_dict()
+        # загружаем медиа
+        media_query = "SELECT Media_ID, Type, File_Path FROM Media WHERE Attraction_ID = %s"
+        media_df = pd.read_sql(media_query, conn, params=(attr_id,))
+        media_list = media_df.to_dict('records') if not media_df.empty else []
         conn.close()
 
     fields = []
@@ -1292,7 +1298,6 @@ def generate_attraction_form(attr_id):
                               placeholder=f"Выберите {label_name.lower()}")
                 ])
             else:
-                # Все текстовые поля – Textarea (многострочный ввод)
                 field = html.Div([
                     html.Label(label_name),
                     dcc.Textarea(
@@ -1310,6 +1315,7 @@ def generate_attraction_form(attr_id):
         dcc.Graph(id='attraction-map-preview', style={'height': '300px'})
     ]))
 
+    # Медиа: загрузка и существующие файлы
     fields.append(html.Div([
         html.Label("Медиа (фото/видео)"),
         dcc.Upload(
@@ -1319,6 +1325,21 @@ def generate_attraction_form(attr_id):
             style={'border': '1px dashed', 'padding': '10px'}
         )
     ]))
+
+    # Контейнер для существующих медиа
+    existing_media_children = []
+    if media_list:
+        for m in media_list:
+            if m['Type'] == 'photo':
+                preview = html.Img(src=f"../assets/{m['File_Path']}", style={'max-height':'100px', 'margin':'5px'})
+            else:
+                preview = html.Video(src=f"../assets/{m['File_Path']}", controls=True, style={'max-height':'100px', 'margin':'5px'})
+            existing_media_children.append(html.Div([
+                preview,
+                html.Button('Удалить', id={'type': 'delete-media', 'media_id': m['Media_ID']}, style={'margin-left': '10px'}),
+            ], style={'display': 'inline-block', 'vertical-align': 'top', 'margin': '5px'}))
+    fields.append(html.Div(existing_media_children, id='existing-media-container'))
+
     fields.append(html.Button('Сохранить', id='save-attraction-btn'))
     if attr_id:
         fields.append(html.Button('Удалить', id='delete-attraction-btn', style={'margin-left': '10px', 'background-color': 'red', 'color': 'white'}))
@@ -1407,6 +1428,7 @@ def save_attraction(n_clicks, attr_id, values, ids):
 # Загрузка медиа (без изменений)
 @app.callback(
     Output('upload-media', 'children', allow_duplicate=True),
+    Output('existing-media-container', 'children'),
     Input('upload-media', 'contents'),
     State('upload-media', 'filename'),
     State('edit-attraction-id', 'data'),
@@ -1414,7 +1436,7 @@ def save_attraction(n_clicks, attr_id, values, ids):
 )
 def handle_media_upload(contents_list, names_list, attr_id):
     if not contents_list or not attr_id:
-        return "Нет ID достопримечательности"
+        return "Нет ID достопримечательности", dash.no_update
     saved = []
     for content, name in zip(contents_list, names_list):
         content_type, content_string = content.split(',')
@@ -1436,8 +1458,88 @@ def handle_media_upload(contents_list, names_list, attr_id):
             saved.append(name)
         except Error as e:
             print(f"Ошибка сохранения медиа: {e}")
-    return f"Загружено: {', '.join(saved)}"
 
+    # После загрузки читаем обновлённый список медиа
+    conn = mysql.connector.connect(**DB_CONFIG) 
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT Media_ID, Type, File_Path FROM Media WHERE Attraction_ID = %s", (attr_id,))
+    media_rows = cursor.fetchall()
+    conn.close()
+
+    items = []
+    for m in media_rows:
+        if m['Type'] == 'photo':
+            preview = html.Img(src=f"../assets/{m['File_Path']}", style={'max-height':'100px', 'margin':'5px'})
+        else:
+            preview = html.Video(src=f"../assets/{m['File_Path']}", controls=True, style={'max-height':'100px', 'margin':'5px'})
+        items.append(html.Div([
+            preview,
+            html.Button('Удалить', id={'type': 'delete-media', 'media_id': m['Media_ID']}, style={'margin-left': '10px'}),
+        ], style={'display': 'inline-block', 'vertical-align': 'top', 'margin': '5px'}))
+
+    return f"Загружено: {', '.join(saved)}", items if items else html.P("Нет медиафайлов")
+
+# Удаление медиафайла из существующей достопримечательности
+@app.callback(
+    Output('existing-media-container', 'children', allow_duplicate=True),
+    Input({'type': 'delete-media', 'media_id': ALL}, 'n_clicks'),
+    State('edit-attraction-id', 'data'),
+    prevent_initial_call=True
+)
+def handle_media_delete(n_clicks_list, attr_id):
+    if not attr_id:
+        raise PreventUpdate
+    ctx = callback_context
+    if not ctx.triggered or not any(n for n in n_clicks_list):
+        raise PreventUpdate
+    triggered_prop = ctx.triggered[0]['prop_id']
+    try:
+        media_id = json.loads(triggered_prop.split('.')[0])['media_id']
+    except Exception:
+        raise PreventUpdate
+    if not ctx.triggered[0]['value']:
+        raise PreventUpdate
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+    # Получаем путь к файлу
+    cursor.execute("SELECT File_Path FROM Media WHERE Media_ID = %s", (media_id,))
+    row = cursor.fetchone()
+    if row:
+        file_path = row['File_Path']
+        # Проверяем, используется ли файл другими достопримечательностями
+        cursor.execute("SELECT COUNT(*) as cnt FROM Media WHERE File_Path = %s", (file_path,))
+        cnt_row = cursor.fetchone()
+        if cnt_row['cnt'] == 1:
+            # Удаляем физический файл
+            abs_path = os.path.join('assets', file_path)
+            if os.path.exists(abs_path):
+                try:
+                    os.remove(abs_path)
+                except Exception as e:
+                    print(f"Не удалось удалить файл {abs_path}: {e}")
+        # Удаляем запись из БД
+        cursor.execute("DELETE FROM Media WHERE Media_ID = %s", (media_id,))
+        conn.commit()
+
+    # Читаем обновлённый список медиа
+    cursor.execute("SELECT Media_ID, Type, File_Path FROM Media WHERE Attraction_ID = %s", (attr_id,))
+    media_rows = cursor.fetchall()
+    conn.close()
+
+    if not media_rows:
+        return html.P("Нет медиафайлов")
+    items = []
+    for m in media_rows:
+        if m['Type'] == 'photo':
+            preview = html.Img(src=f"../assets/{m['File_Path']}", style={'max-height':'100px', 'margin':'5px'})
+        else:
+            preview = html.Video(src=f"../assets/{m['File_Path']}", controls=True, style={'max-height':'100px', 'margin':'5px'})
+        items.append(html.Div([
+            preview,
+            html.Button('Удалить', id={'type': 'delete-media', 'media_id': m['Media_ID']}, style={'margin-left': '10px'}),
+        ], style={'display': 'inline-block', 'vertical-align': 'top', 'margin': '5px'}))
+    return items
 
 # ================== РЕДАКТИРОВАНИЕ МАРШРУТОВ ==================
 @app.callback(
