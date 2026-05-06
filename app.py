@@ -700,6 +700,17 @@ def update_map_and_info(selected_route_id, geo_data, href):
     df_points = pd.DataFrame(geo_data)
     route_points_df = df_points[df_points['Route_ID'] == selected_route_id]
 
+    start_finish_df = route_points_df[
+        (route_points_df['Attraction_Name'] == 'Старт маршрута') | 
+        (route_points_df['Attraction_Name'] == 'Финиш маршрута')
+    ]
+    start_df = route_points_df[
+        (route_points_df['Attraction_Name'] == 'Старт маршрута')
+    ]
+    finish_df = route_points_df[
+        (route_points_df['Attraction_Name'] == 'Финиш маршрута')
+    ]
+
     fig = go.Figure()
 
     route_geom = None
@@ -729,44 +740,79 @@ def update_map_and_info(selected_route_id, geo_data, href):
             name='Маршрут', hoverinfo='skip'
         ))
 
+        # Фильтруем только реальные достопримечательности
     attractions_df = route_points_df[
         (route_points_df['Attraction_Name'] != 'Старт маршрута') &
         (route_points_df['Attraction_Name'] != 'Финиш маршрута')
     ].copy().sort_values('Stop_Number')
 
+    # Координаты старта и финиша
+    start_lat = start_df['lat'].iloc[0] if not start_df.empty else None
+    start_lon = start_df['lon'].iloc[0] if not start_df.empty else None
+    finish_lat = finish_df['lat'].iloc[0] if not finish_df.empty else None
+    finish_lon = finish_df['lon'].iloc[0] if not finish_df.empty else None
+
+    # Функция проверки совпадения координат с погрешностью ~0.1 метра
+    def is_same(lat1, lon1, lat2, lon2):
+        if lat1 is None or lon1 is None:
+            return False
+        return abs(lat1 - lat2) < 1e-6 and abs(lon1 - lon2) < 1e-6
+
+    # Определяем цвет и текст подсказки для каждой достопримечательности
+    marker_colors = []
+    marker_texts = []
+    for _, row in attractions_df.iterrows():
+        lat, lon = row['lat'], row['lon']
+        if is_same(lat, lon, start_lat, start_lon):
+            color = 'green'
+            text = f"Старт <br>"
+        elif is_same(lat, lon, finish_lat, finish_lon):
+            color = 'orange'
+            text = f"Финиш <br>"
+        else:
+            color = 'red'
+            text = ''
+        marker_colors.append(color)
+        marker_texts.append(text)
+
+    attractions_df['marker_color'] = marker_colors
+    attractions_df['hover_text'] = marker_texts
+
     customdata = attractions_df[['Attraction_ID', 'Attraction_Name']].copy()
     customdata['Number'] = range(1, len(customdata) + 1)
+
     fig.add_trace(go.Scattermapbox(
         lat=attractions_df['lat'], lon=attractions_df['lon'],
-        mode='markers', text=attractions_df['Attraction_Name'],
+        mode='markers',
+        text=attractions_df['hover_text'],
         customdata=customdata.values,
         hovertemplate=(
+            "%{text}"
             "<b>№ %{customdata[2]}</b><br>"
             "%{customdata[1]}<br>"
             "ID: %{customdata[0]}<br>"
             "Широта: %{lat}<br>Долгота: %{lon}<br><extra></extra>"
         ),
-        marker=dict(size=12, color='red'),
-        name='Достопримечательности', hoverinfo='skip'
+        marker=dict(size=12, color=attractions_df['marker_color']),
+        name='Достопримечательности',
+        hoverinfo='skip'
     ))
 
-    start_df = route_points_df[route_points_df['Attraction_Name'] == 'Старт маршрута']
-    finish_df = route_points_df[route_points_df['Attraction_Name'] == 'Финиш маршрута']
-
-    if not start_df.empty:
+    # Добавляем отдельные маркеры старта и финиша только если они не перекрыты
+    if start_lat is not None and not any(is_same(r['lat'], r['lon'], start_lat, start_lon) for _, r in attractions_df.iterrows()):
         fig.add_trace(go.Scattermapbox(
-            lat=start_df['lat'], lon=start_df['lon'],
+            lat=[start_lat], lon=[start_lon],
             mode='markers', marker=dict(size=12, color='green'),
-            hovertemplate="<b>%{text}</b><extra></extra>",
-            text=start_df['Attraction_Name'],
+            hovertemplate="<b>Старт маршрута</b><extra></extra>",
+            text=['Старт маршрута'],
             name='Точка старта', hoverinfo='skip'
         ))
-    if not finish_df.empty:
+    if finish_lat is not None and not any(is_same(r['lat'], r['lon'], finish_lat, finish_lon) for _, r in attractions_df.iterrows()):
         fig.add_trace(go.Scattermapbox(
-            lat=finish_df['lat'], lon=finish_df['lon'],
+            lat=[finish_lat], lon=[finish_lon],
             mode='markers', marker=dict(size=12, color='orange'),
-            hovertemplate="<b>%{text}</b><extra></extra>",
-            text=finish_df['Attraction_Name'],
+            hovertemplate="<b>Финиш маршрута</b><extra></extra>",
+            text=['Финиш маршрута'],
             name='Точка финиша', hoverinfo='skip'
         ))
 
@@ -775,13 +821,9 @@ def update_map_and_info(selected_route_id, geo_data, href):
         mapbox_zoom=10,
         mapbox_center_lat=route_points_df['lat'].mean(),
         mapbox_center_lon=route_points_df['lon'].mean(),
-        margin={"r":20,"t":40,"l":0,"b":50},   # увеличен нижний отступ
+        margin={"r":20,"t":40,"l":0,"b":50},
         legend=dict(
-            x=0.5,               # по центру по горизонтали
-            y=-0.1,              # чуть ниже карты
-            xanchor='center',
-            yanchor='top',
-            orientation='h'      # горизонтальное расположение элементов легенды
+            x=0.5, y=-0.1, xanchor='center', yanchor='top', orientation='h'
         ),
         showlegend=True,
     )
@@ -1853,18 +1895,46 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             hoverinfo='skip'
         ))
 
-    labels = ['Старт'] + attr_names + ['Финиш']
-    for i, (lon, lat) in enumerate(points):
-        color = 'green' if i == 0 else 'orange' if i == len(points)-1 else 'red'
-        size = 12 if i in (0, len(points)-1) else 10
+        # Подготовка маркеров с учётом совпадений старта/финиша
+    start_lon, start_lat = points[0]
+    finish_lon, finish_lat = points[-1]
+    tolerance = 1e-6
+
+    markers = []  # список кортежей (lat, lon, color, text)
+    start_covered = False
+    finish_covered = False
+
+    # Промежуточные точки (достопримечательности)
+    for i, (lon, lat) in enumerate(points[1:-1], start=1):
+        attr_name = attr_names[i-1]
+        color = 'red'
+        text = attr_name
+        if abs(lat - start_lat) < tolerance and abs(lon - start_lon) < tolerance:
+            color = 'green'
+            text = f"Старт: {attr_name}"
+            start_covered = True
+        elif abs(lat - finish_lat) < tolerance and abs(lon - finish_lon) < tolerance:
+            color = 'orange'
+            text = f"Финиш: {attr_name}"
+            finish_covered = True
+        markers.append((lat, lon, color, text))
+
+    # Добавляем старт и финиш, если они не покрыты
+    if not start_covered:
+        markers.append((start_lat, start_lon, 'green', 'Старт'))
+    if not finish_covered:
+        markers.append((finish_lat, finish_lon, 'orange', 'Финиш'))
+
+    # Отрисовываем все маркеры
+    for (lat, lon, color, text) in markers:
         fig.add_trace(go.Scattermapbox(
             lat=[lat], lon=[lon],
             mode='markers+text',
-            text=[labels[i]],
+            text=[text],
             textposition='top center',
             textfont=dict(size=10, color='black'),
-            marker=dict(size=size, color=color),
-            hovertemplate=f"<b>{labels[i]}</b><br>Широта: %{{lat}}<br>Долгота: %{{lon}}<extra></extra>",
+            marker=dict(size=12, color=color),
+            hovertemplate=f"<b>{text}</b><br>Широта: %{{lat}}<br>Долгота: %{{lon}}<extra></extra>",
             showlegend=False
         ))
 
