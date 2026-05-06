@@ -64,6 +64,101 @@ DB_CONFIG = {
     'connection_timeout': int(os.getenv('DB_TIMEOUT', '10')),
 }
 
+# === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ===
+
+import subprocess
+import os.path
+
+import subprocess
+import os.path
+
+def _find_mysql_client():
+    """Ищет mysql.exe в стандартных папках установки MySQL на Windows."""
+    possible_paths = [
+        r'C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe',
+        r'C:\Program Files\MySQL\MySQL Server 8.4\bin\mysql.exe',
+        r'C:\Program Files\MySQL\MySQL Server 5.7\bin\mysql.exe',
+        r'C:\Program Files (x86)\MySQL\MySQL Server 8.0\bin\mysql.exe',
+        r'C:\Program Files (x86)\MySQL\MySQL Server 5.7\bin\mysql.exe',
+    ]
+    for path in possible_paths:
+        if os.path.exists(path):
+            return path
+    return None
+
+def init_database():
+    """
+    Проверяет существование базы данных travel_db.
+    Если база отсутствует — создаёт её из файла travel_db_dump.sql
+    с помощью клиента mysql (надёжно обрабатывает любые символы).
+    """
+    dump_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'travel_db_dump.sql')
+    if not os.path.exists(dump_file):
+        print("⚠️  Файл дампа travel_db_dump.sql не найден. Пропускаем автоматическое создание БД.")
+        return
+
+    # Подключаемся к MySQL (можно к любой существующей БД, например, mysql)
+    conn_config = {
+        'host': DB_CONFIG.get('host', 'localhost'),
+        'user': DB_CONFIG.get('user', 'root'),
+        'password': DB_CONFIG.get('password', ''),
+        'database': 'mysql',   # чтобы проверить наличие travel_db
+        'connection_timeout': DB_CONFIG.get('connection_timeout', 10),
+    }
+    try:
+        conn = mysql.connector.connect(**conn_config)
+        cursor = conn.cursor()
+        cursor.execute("SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = 'travel_db'")
+        if cursor.fetchone():
+            print("✅ База данных travel_db уже существует.")
+            cursor.close()
+            conn.close()
+            return
+        cursor.close()
+        conn.close()
+    except mysql.connector.Error as e:
+        print(f"❌ Ошибка подключения к MySQL: {e}")
+        raise
+
+    # Базы нет – выполняем дамп через внешнюю утилиту mysql
+    print("🚀 База данных travel_db не найдена. Создаём из дампа через клиент mysql...")
+
+    mysql_cmd = _find_mysql_client()
+    if not mysql_cmd:
+        # Если не нашли автоматически, попросим указать вручную
+        manual_path = input("Введите полный путь к mysql.exe (например, C:\\Program Files\\MySQL\\MySQL Server 8.0\\bin\\mysql.exe): ").strip()
+        if not os.path.exists(manual_path):
+            raise FileNotFoundError(f"Не найден mysql клиент по пути: {manual_path}")
+        mysql_cmd = manual_path
+
+    cmd = [
+        mysql_cmd,
+        f'--host={conn_config["host"]}',
+        f'--user={conn_config["user"]}',
+    ]
+    env = os.environ.copy()
+    if conn_config['password']:
+        env['MYSQL_PWD'] = conn_config['password']
+
+    try:
+        with open(dump_file, 'r', encoding='utf-8') as f:
+            subprocess.run(
+                cmd,
+                stdin=f,
+                check=True,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+        print("✅ База данных travel_db успешно создана из дампа.")
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Ошибка выполнения mysql: {e.stderr}")
+        raise RuntimeError("Не удалось создать базу данных из дампа.")
+
+# Выполняем инициализацию при старте
+init_database()
+
 # --- ИНИЦИАЛИЗАЦИЯ DASH ПРИЛОЖЕНИЯ ---
 app = dash.Dash(__name__)
 server = app.server
