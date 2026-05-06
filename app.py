@@ -1304,6 +1304,12 @@ def generate_attraction_form(attr_id):
                 ])
         fields.append(field)
 
+    # Предпросмотр на карте
+    fields.append(html.Div([
+        html.Label("Предпросмотр на карте"),
+        dcc.Graph(id='attraction-map-preview', style={'height': '300px'})
+    ]))
+
     fields.append(html.Div([
         html.Label("Медиа (фото/видео)"),
         dcc.Upload(
@@ -2282,6 +2288,49 @@ def save_dict_record(n_clicks, edit_data, name, description, object_type_id, tab
     # Обновляем список и очищаем форму
     return load_dict_list(table_name), html.Div()
 
+# Предпросмотр координат на карте в форме достопримечательности
+@app.callback(
+    Output('attraction-map-preview', 'figure'),
+    Input({'type': 'attr-field', 'name': 'Latitude'}, 'value'),
+    Input({'type': 'attr-field', 'name': 'Longitude'}, 'value')
+)
+def update_attraction_map_preview(lat, lon):
+    # Если поля пустые
+    if lat is None or lon is None or lat == '' or lon == '':
+        fig = go.Figure()
+        fig.add_annotation(text="Введите широту и долготу, чтобы увидеть точку на карте",
+                           showarrow=False, font=dict(size=12))
+        return fig
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+    except (ValueError, TypeError):
+        fig = go.Figure()
+        fig.add_annotation(text="Некорректные координаты", showarrow=False, font=dict(size=12, color='red'))
+        return fig
+
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        fig = go.Figure()
+        fig.add_annotation(text="Широта: -90…90, долгота: -180…180", showarrow=False, font=dict(size=12, color='red'))
+        return fig
+
+    fig = go.Figure(go.Scattermapbox(
+        lat=[lat], lon=[lon], mode='markers',
+        marker=dict(size=14, color='red'),
+        hovertemplate=f"Широта: {lat}<br>Долгота: {lon}<extra></extra>",
+        hoverinfo='skip'
+    ))
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox_zoom=12,
+        mapbox_center_lat=lat,
+        mapbox_center_lon=lon,
+        margin={"r":0,"t":0,"l":0,"b":0},
+        height=300
+    )
+    return fig
+
 #=========== Главный колбэк: переключение страниц и генерация контента ===============
 @app.callback(
     Output('main-page-layout', 'style'),
@@ -2579,7 +2628,13 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     mode='markers',
                     marker=go.scattermapbox.Marker(size=14, color='red'),
                     text=[row_attr['Name']],
-                    hoverinfo='text'
+                    hovertemplate=(
+                        f"<b>{row_attr['Name']}</b><br>"
+                        "Широта: %{lat}<br>"
+                        "Долгота: %{lon}<br>"
+                        "<extra></extra>"
+                    ),
+                    hoverinfo='skip'
                 ))
                 
                 map_fig.update_layout(
