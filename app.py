@@ -1741,13 +1741,11 @@ def modify_attr_list(up_clicks, down_clicks, remove_clicks, data):
     prevent_initial_call=True
 )
 def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, selected_attrs):
-    # Если кнопка не нажималась – ничего не обновляем
     if not n_clicks:
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update, "", dash.no_update
 
-    key = str(n_clicks)  # динамический ключ для сброса кэша
+    key = str(n_clicks)
 
-    # --- Проверка входных данных ---
     if None in [start_lat, start_lon, end_lat, end_lon]:
         fig = go.Figure()
         fig.add_annotation(text="Пожалуйста, заполните координаты старта и финиша",
@@ -1760,7 +1758,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
                            showarrow=False, font=dict(size=14))
         return fig, [], [], None, "⚠️ Нет промежуточных точек", key
 
-    # --- Сбор точек в порядке: старт, все выбранные, финиш ---
+    # Сбор точек: старт -> все выбранные -> финиш
     points = [(start_lon, start_lat)]
     attr_names = []
     try:
@@ -1789,62 +1787,63 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
 
     points.append((end_lon, end_lat))
 
-    # --- Запросы к OSRM (автомобиль и пешком) ---
-    # Используем публичный сервер OSRM (демо)
     base_url = "https://router.project-osrm.org/route/v1"
+    coords_str = ";".join([f"{lon},{lat}" for lon, lat in points])
+
     all_routes = []
     variants_geom = []
     options = []
+    seen_hashes = set()          # <-- ИНИЦИАЛИЗАЦИЯ (была пропущена)
     errors = []
 
-    # Формируем строку координат для OSRM: lng,lat;lng,lat;...
-    coords_str = ";".join([f"{lon},{lat}" for lon, lat in points])
+    profiles = [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]
 
-    for profile, profile_label in [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]:
-        url = (f"{base_url}/{profile}/{coords_str}"
-               f"?alternatives=3"          # до 3 альтернативных маршрутов
-               f"&overview=full"
-               f"&geometries=geojson"
-               f"&steps=false")
+    for profile, profile_label in profiles:
+        url = f"{base_url}/{profile}/{coords_str}"
+        params = {
+            "alternatives": "3",   # запрашиваем до 3 вариантов (но сервер может вернуть 1)
+            "overview": "full",
+            "geometries": "geojson",
+            "steps": "false",
+        }
         try:
-            resp = requests.get(url, timeout=15)
+            resp = requests.get(url, params=params, timeout=15)
             if resp.status_code != 200:
                 errors.append(f"{profile_label}: HTTP {resp.status_code}")
                 continue
             data = resp.json()
-            if data.get("code") != "Ok" or "routes" not in data:
-                errors.append(f"{profile_label}: {data.get('message', 'нет ответа')}")
+            if data.get("code") != "Ok" or "routes" not in data or not data["routes"]:
+                errors.append(f"{profile_label}: нет маршрутов")
                 continue
-            routes = data["routes"]
-            if not routes:
-                errors.append(f"{profile_label}: маршрутов не найдено")
-                continue
-            # Обрабатываем все полученные маршруты (обычно 1, если alternatives=0, но мы запросили до 3)
-            for i, route in enumerate(routes, start=1):
+
+            for i, route in enumerate(data["routes"], start=1):
                 geom = route.get("geometry")
                 if not geom or "coordinates" not in geom:
                     continue
-                # OSRM выдает координаты в формате [lng, lat]
-                label = f"{profile_label}, вариант {i}"
+                # Убираем дубликаты по координатам
+                coord_tuple = tuple(tuple(pt) for pt in geom["coordinates"])
+                if coord_tuple in seen_hashes:
+                    continue
+                seen_hashes.add(coord_tuple)
+
+                label = f"{profile_label}, вариант {len(seen_hashes)}"
                 all_routes.append({'geometry': geom, 'label': label})
                 variants_geom.append(json.dumps(geom))
                 options.append({'label': label, 'value': len(options)})
         except Exception as e:
             errors.append(f"{profile_label}: {e}")
 
-    # --- Если ни одного маршрута не найдено ---
     if not all_routes:
         fig = go.Figure()
         msg = "Маршрутов не найдено.\n" + "\n".join(errors) if errors else "Маршрутов не найдено."
         fig.add_annotation(text=msg, showarrow=False, font=dict(size=14, color='red'))
         return fig, [], [], None, f"❌ {msg}", key
 
-    # --- Отрисовка всех вариантов ---
+    # --- Отрисовка ---
     fig = go.Figure()
     colors = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan']
     for idx, route in enumerate(all_routes):
         geom = route['geometry']
-        # GeoJSON-координаты: список [lng, lat]
         lons = [pt[0] for pt in geom['coordinates']]
         lats = [pt[1] for pt in geom['coordinates']]
         fig.add_trace(go.Scattermapbox(
@@ -1854,12 +1853,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             hoverinfo='skip'
         ))
 
-    # Маркеры точек (старт, промежуточные, финиш)
-    labels = ['Старт']
-    for i, name in enumerate(attr_names, start=1):
-        labels.append(f'{i}. {name}')
-    labels.append('Финиш')
-
+    labels = ['Старт'] + attr_names + ['Финиш']
     for i, (lon, lat) in enumerate(points):
         color = 'green' if i == 0 else 'orange' if i == len(points)-1 else 'red'
         size = 12 if i in (0, len(points)-1) else 10
@@ -1884,6 +1878,8 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
     )
 
     status = f"✅ Построено {len(all_routes)} вариантов (OSRM)"
+    if errors:
+        status += f" (ошибок: {len(errors)})"
     return fig, variants_geom, options, 0, status, key
 
 # Сохранение маршрута (включая геометрию и связь с достопримечательностями)
