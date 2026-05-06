@@ -16,6 +16,7 @@ from datetime import datetime
 import qrcode
 import io
 from dash.exceptions import PreventUpdate
+import dash_bootstrap_components as dbc
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -66,9 +67,6 @@ DB_CONFIG = {
 }
 
 # === ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ===
-
-import subprocess
-import os.path
 
 import subprocess
 import os.path
@@ -161,7 +159,8 @@ def init_database():
 init_database()
 
 # --- ИНИЦИАЛИЗАЦИЯ DASH ПРИЛОЖЕНИЯ ---
-app = dash.Dash(__name__)
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
+                meta_tags=[{'name': 'viewport', 'content': 'width=device-width, initial-scale=1'}])
 server = app.server
 
 # Секретный ключ для подписи сессий os.environ['SECRET_KEY']
@@ -411,12 +410,11 @@ app.layout = html.Div([
         ),
     ], style={'width': '50%', 'margin': 'auto', 'padding': '20px'}),
     html.Div([
-        # График карты (слева)
-        dcc.Graph(id='map-graph', style={'width': '70%', 'display': 'inline-block', 'vertical-align': 'top'}),
-    
-        # Блок с информацией о маршруте (справа)
-        html.Div(id='route-info-container', style={'width': '28%', 'display': 'inline-block', 'padding': '20px', 'box-sizing': 'border-box'}),
-    ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id='map-graph', style={'height': '500px'}), xs=12, md=8),
+            dbc.Col(html.Div(id='route-info-container'), xs=12, md=4)
+        ])
+    ], className='container-fluid px-md-5'),
     # Скрытые элементы для хранения данных и работы с URL
      dcc.Store(id='routes-meta-store'), 
     dcc.Store(id='routes-data-store'), # Здесь хранятся только координаты точек
@@ -685,30 +683,25 @@ def set_dropdown_value_from_url(href, options):
     Input('url', 'href')
 )
 def update_map_and_info(selected_route_id, geo_data, href):
-    """Обновляет карту и блок информации при выборе маршрута."""
-    
-    # Сброс состояния, если маршрут не выбран
     if not geo_data or not selected_route_id:
         empty_fig = {
-             "layout": {
-                 "xaxis": {"visible": False},
-                 "yaxis": {"visible": False},
-                 "annotations": [{
-                     "text": "Выберите маршрут из списка",
-                     "xref": "paper", "yref": "paper",
-                     "showarrow": False, "font": {"size": 16}
-                 }]
-             }
-         }
+            "layout": {
+                "xaxis": {"visible": False},
+                "yaxis": {"visible": False},
+                "annotations": [{
+                    "text": "Выберите маршрут из списка",
+                    "xref": "paper", "yref": "paper",
+                    "showarrow": False, "font": {"size": 16}
+                }]
+            }
+        }
         return empty_fig, html.Div()
-    
-    # --- ЧАСТЬ 1: ОТРИСОВКА КАРТЫ (используем данные из routes-data-store) ---
+
     df_points = pd.DataFrame(geo_data)
     route_points_df = df_points[df_points['Route_ID'] == selected_route_id]
 
     fig = go.Figure()
 
-    # Попытка получить сохранённую дорожную геометрию маршрута
     route_geom = None
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
@@ -716,16 +709,11 @@ def update_map_and_info(selected_route_id, geo_data, href):
         cursor.execute("SELECT route_geometry FROM Routes WHERE Route_ID = %s", (selected_route_id,))
         row = cursor.fetchone()
         if row and row['route_geometry']:
-            # Если хранится как строка JSON, десериализуем
-            if isinstance(row['route_geometry'], str):
-                route_geom = json.loads(row['route_geometry'])
-            else:
-                route_geom = row['route_geometry']
+            route_geom = json.loads(row['route_geometry']) if isinstance(row['route_geometry'], str) else row['route_geometry']
         conn.close()
     except:
         pass
-    
-    # Линия маршрута
+
     if route_geom and 'coordinates' in route_geom:
         coords = route_geom['coordinates']
         lats = [pt[1] for pt in coords]
@@ -736,252 +724,181 @@ def update_map_and_info(selected_route_id, geo_data, href):
         ))
     else:
         fig.add_trace(go.Scattermapbox(
-            lat=route_points_df['lat'],
-            lon=route_points_df['lon'],
-            mode='lines',
-            line=dict(color='blue', width=4),
-            name='Маршрут',
-            hoverinfo='skip'
+            lat=route_points_df['lat'], lon=route_points_df['lon'],
+            mode='lines', line=dict(color='blue', width=4),
+            name='Маршрут', hoverinfo='skip'
         ))
 
-    # Фильтруем только реальные достопримечательности (у них есть Attraction_ID > 0)
-    # Старт и Финиш мы исключаем из этого списка, чтобы по ним нельзя было перейти.
     attractions_df = route_points_df[
-        (route_points_df['Attraction_Name'] != 'Старт маршрута') & 
+        (route_points_df['Attraction_Name'] != 'Старт маршрута') &
         (route_points_df['Attraction_Name'] != 'Финиш маршрута')
-    ].copy()
+    ].copy().sort_values('Stop_Number')
 
-    # Сортируем по порядку в маршруте (Number)
-    attractions_df = attractions_df.sort_values('Stop_Number')
-    
     customdata = attractions_df[['Attraction_ID', 'Attraction_Name']].copy()
-    customdata['Number'] = range(1, len(customdata) + 1)  # порядковые номера
-    # Точки (маркеры)
+    customdata['Number'] = range(1, len(customdata) + 1)
     fig.add_trace(go.Scattermapbox(
-        lat=attractions_df['lat'],
-        lon=attractions_df['lon'],
-        mode='markers',
-
-        text = attractions_df["Attraction_Name"],
-
+        lat=attractions_df['lat'], lon=attractions_df['lon'],
+        mode='markers', text=attractions_df['Attraction_Name'],
         customdata=customdata.values,
-        # --- НАСТРОЙКА ПОДСКАЗОК (TOOLTIP) ---
         hovertemplate=(
-            "<b>№ %{customdata[2]}</b><br>" +  
-            "%{customdata[1]}<br>" +           
-            "ID: %{customdata[0]}<br>" +       
-            "Широта: %{lat}<br>" +
-            "Долгота: %{lon}<br>" +
-            "<extra></extra>"
+            "<b>№ %{customdata[2]}</b><br>"
+            "%{customdata[1]}<br>"
+            "ID: %{customdata[0]}<br>"
+            "Широта: %{lat}<br>Долгота: %{lon}<br><extra></extra>"
         ),
-        
         marker=dict(size=12, color='red'),
-        name='Достопримечательности',
-        hoverinfo='skip'
+        name='Достопримечательности', hoverinfo='skip'
     ))
 
-    # --- СЛЕД 3: СТАРТ И ФИНИШ (не кликабельные точки) ---
-    # Фильтруем только Старт и Финиш
-    start_finish_df = route_points_df[
-        (route_points_df['Attraction_Name'] == 'Старт маршрута') | 
-        (route_points_df['Attraction_Name'] == 'Финиш маршрута')
-    ]
+    start_df = route_points_df[route_points_df['Attraction_Name'] == 'Старт маршрута']
+    finish_df = route_points_df[route_points_df['Attraction_Name'] == 'Финиш маршрута']
 
-    start_df = route_points_df[
-        (route_points_df['Attraction_Name'] == 'Старт маршрута')
-    ]
+    if not start_df.empty:
+        fig.add_trace(go.Scattermapbox(
+            lat=start_df['lat'], lon=start_df['lon'],
+            mode='markers', marker=dict(size=12, color='green'),
+            hovertemplate="<b>%{text}</b><extra></extra>",
+            text=start_df['Attraction_Name'],
+            name='Точка старта', hoverinfo='skip'
+        ))
+    if not finish_df.empty:
+        fig.add_trace(go.Scattermapbox(
+            lat=finish_df['lat'], lon=finish_df['lon'],
+            mode='markers', marker=dict(size=12, color='orange'),
+            hovertemplate="<b>%{text}</b><extra></extra>",
+            text=finish_df['Attraction_Name'],
+            name='Точка финиша', hoverinfo='skip'
+        ))
 
-    finish_df = route_points_df[
-        (route_points_df['Attraction_Name'] == 'Финиш маршрута')
-    ]
-
-    fig.add_trace(go.Scattermapbox(
-        lat=start_df['lat'],
-        lon=start_df['lon'],
-        mode='markers',
-        
-        # У этих точек НЕТ customdata, поэтому по ним нельзя будет кликнуть для перехода
-        
-        marker=dict(size=12, color='green'), 
-        # Зеленый цвет, чтобы визуально отличить от красных достопримечательностей
-        
-        hovertemplate="<b>%{text}</b><extra></extra>",
-        
-        text=start_df['Attraction_Name'],
-        name='Точка старта',
-        hoverinfo='skip' # Используем свой hovertemplate
-    ))
-
-    fig.add_trace(go.Scattermapbox(
-        lat=finish_df['lat'],
-        lon=finish_df['lon'],
-        mode='markers',
-        
-        # У этих точек НЕТ customdata, поэтому по ним нельзя будет кликнуть для перехода
-        
-        marker=dict(size=12, color='orange'), 
-        # Зеленый цвет, чтобы визуально отличить от красных достопримечательностей
-        
-        hovertemplate="<b>%{text}</b><extra></extra>",
-        
-        text=finish_df['Attraction_Name'],
-        name='Точка финиша',
-        hoverinfo='skip' # Используем свой hovertemplate
-    ))
-    
     fig.update_layout(
-         mapbox_style="open-street-map",
-         mapbox_zoom=10,
-         mapbox_center_lat=route_points_df['lat'].mean(),
-         mapbox_center_lon=route_points_df['lon'].mean(),
-         margin={"r":20,"t":40,"l":0,"b":0},
-         showlegend=True,
-     )
-     
-    # --- ЧАСТЬ 2: ПОЛУЧЕНИЕ ВСЕЙ ИНФОРМАЦИИ О МАРШРУТЕ (НОВЫЙ ЗАПРОС В БД!) ---
-    info_html = html.Div()
+        mapbox_style="open-street-map",
+        mapbox_zoom=10,
+        mapbox_center_lat=route_points_df['lat'].mean(),
+        mapbox_center_lon=route_points_df['lon'].mean(),
+        margin={"r":20,"t":40,"l":0,"b":50},   # увеличен нижний отступ
+        legend=dict(
+            x=0.5,               # по центру по горизонтали
+            y=-0.1,              # чуть ниже карты
+            xanchor='center',
+            yanchor='top',
+            orientation='h'      # горизонтальное расположение элементов легенды
+        ),
+        showlegend=True,
+    )
+
+    # --- Информация о маршруте ---
+    info_card = html.Div()
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
-        
-        # Запрос выбираем все поля из таблицы Routes для выбранного ID
         query = """
-    SELECT 
-        r.*,
-        al.Name as Admin_Location_Name,
-        rt.Name as Route_Type_Name,
-        rth.Name as Route_Theme_Name,
-        d.Name as Difficulty_Name,
-        ltm.Name as Length_Time_Metric_Name,
-        s.Name as Season_Name
-    FROM Routes r
-    LEFT JOIN Admin_Location al ON r.Admin_Location_ID = al.Admin_Location_ID
-    LEFT JOIN Route_Types rt ON r.Route_Type_ID = rt.Route_Type_ID
-    LEFT JOIN Route_Themes rth ON r.Route_Theme_ID = rth.Route_Theme_ID
-    LEFT JOIN Difficulties d ON r.Difficulty_ID = d.Difficulty_ID
-    LEFT JOIN Length_Time_Metrics ltm ON r.Length_Time_Metric_ID = ltm.Length_Time_Metric_ID
-    LEFT JOIN Seasons s ON r.Season_ID = s.Season_ID
-    WHERE r.Route_ID = %s AND r.Deleted = 0;
-    """#"SELECT * FROM Routes WHERE Route_ID = %s;"
-        
+        SELECT r.*,
+               al.Name as Admin_Location_Name,
+               rt.Name as Route_Type_Name,
+               rth.Name as Route_Theme_Name,
+               d.Name as Difficulty_Name,
+               ltm.Name as Length_Time_Metric_Name,
+               s.Name as Season_Name
+        FROM Routes r
+        LEFT JOIN Admin_Location al ON r.Admin_Location_ID = al.Admin_Location_ID
+        LEFT JOIN Route_Types rt ON r.Route_Type_ID = rt.Route_Type_ID
+        LEFT JOIN Route_Themes rth ON r.Route_Theme_ID = rth.Route_Theme_ID
+        LEFT JOIN Difficulties d ON r.Difficulty_ID = d.Difficulty_ID
+        LEFT JOIN Length_Time_Metrics ltm ON r.Length_Time_Metric_ID = ltm.Length_Time_Metric_ID
+        LEFT JOIN Seasons s ON r.Season_ID = s.Season_ID
+        WHERE r.Route_ID = %s AND r.Deleted = 0
+        """
         info_df = pd.read_sql(query, conn, params=(selected_route_id,), dtype=object)
-         
+        
+
         if not info_df.empty:
             row = info_df.iloc[0]
-             
-            # Динамически создаем HTML-блок со всеми полями из таблицы
-            content = []
-            skip_fields = {'Route_ID', 'Start_Point_Latitude', 'Start_Point_Longitude',
-                       'End_Point_Latitude', 'End_Point_Longitude', 'route_geometry',
-                       'Deleted', 'Creator_User_ID', 'Last_Updated_User_ID',
-                       'Route_Type_ID', 'Route_Theme_ID',
-                       'Difficulty_ID', 'Length_Time_Metric_ID', 'Season_ID'}
-            aliases = {
-                'Admin_Location_Name': 'Административное расположение',
-                'Route_Type_Name': 'Тип маршрута',
-                'Route_Theme_Name': 'Тема маршрута',
-                'Difficulty_Name': 'Сложность',
-                'Length_Time_Metric_Name': 'Единица измерения времени',
-                'Season_Name': 'Сезон',
-                'Name':'Название маршрута',
-                'Length':'Протяжённость маршрута (км)',
-                'Length_Time':'Продолжительность маршрута',
-                'Description':'Описание',
-                'Recommendations':'Рекоммендации по снаряжению и провианту',
-                'Organisators_Contacts':'Контакты организаторов экскурсий'
-            }
-            for idx, col in enumerate(info_df.columns):
-                # Приводим имена к красивому виду и пропускаем технические ID
-                if col in aliases:
-                    display_name = aliases[col]
-                else:
-                    display_name = col.replace('_', ' ').title()                                
-                #display_name = aliases[col]
-                value = row[col]
-                if col in skip_fields:#['route_geometry','Start_Point_Latitude','Start_Point_Longitude', 'End_Point_Latitude', 'End_Point_Longitude']:
-                    continue
+            primary_fields = [
+                ('Название', row.get('Name')),
+                ('Тип маршрута', row.get('Route_Type_Name')),
+                ('Тема', row.get('Route_Theme_Name')),
+                ('Сложность', row.get('Difficulty_Name')),
+                ('Протяжённость (км)', row.get('Length')),
+                ('Продолжительность', f"{row.get('Length_Time', '')} {row.get('Length_Time_Metric_Name', '')}".strip()),
+                ('Сезон', row.get('Season_Name')),
+                ('Административное расположение',
+                 bring_address(conn.cursor(dictionary=True), row.get('Admin_Location_ID')) if hasattr(conn, 'cursor') else ''),
+                ('Контакты организаторов', row.get('Organisators_Contacts')),
+            ]
+            detail_fields = [
+                ('Описание', row.get('Description')),
+                ('Рекомендации', row.get('Recommendations')),
+            ]
 
-                if col in ['Admin_Location_ID']:
-                    display_name = "Административное расположение"
-                    value = bring_address(conn.cursor(dictionary=True), value)
+            def make_field(label, value):
+                if not value or (isinstance(value, str) and value.strip() == ''):
+                    return None
+                return html.Div([
+                    html.B(label + ': '),
+                    dcc.Markdown(str(value).replace('\n', '<br>'), style={'display': 'inline'})
+                ], className='mb-2')
 
-                if value is None or (isinstance(value, str) and value.strip() == ''):
-                    continue
-                
-                value_for_display = "" if value is None else str(value).replace('\n','<br>')
-                
+            primary_items = [f for f in (make_field(l, v) for l, v in primary_fields) if f]
+            detail_items = [f for f in (make_field(l, v) for l, v in detail_fields) if f]
 
-                content.append(html.P(
-                    [html.B(f"{display_name}: "), dcc.Markdown(value_for_display)],
-                    key=f"info-row-{idx}"
-                ))
-             
-            info_html = html.Div([
-                html.H3(row['Name']),
-                html.Hr(),
-                *content # Распаковываем список параграфов
+            info_card = dbc.Card([
+                dbc.CardHeader(html.H4(row.get('Name', 'Маршрут'), className='card-title mb-0')),
+                dbc.CardBody([
+                    html.Div(primary_items),
+                    details := html.Div(),
+                ]),
             ])
-             
-            fig.update_layout(title_text=f"Маршрут: {row['Name']}")
-        else:
-            info_html=html.Div("Маршрут не найден")
-             
+            if detail_items:
+                details.children = [html.Hr(), html.H5('Дополнительно'), html.Div(detail_items)]
+
+            fig.update_layout(title_text=f"Маршрут: {row.get('Name', '')}")
+
     except Error as e:
-        print(f"Ошибка при получении информации о маршруте: {e}")
-        info_html = html.Div("Ошибка загрузки информации о маршруте.")
-    finally:
-        if conn.is_connected():
-            conn.close()
+        info_card = dbc.Alert(f"Ошибка загрузки информации: {e}", color='danger')
+    except:
+        info_card = dbc.Alert("Не удалось загрузить информацию о маршруте", color='warning')
+
+    # QR-код
     qr_block = html.Div()
     if selected_route_id and href:
         try:
             parsed = urllib.parse.urlparse(href)
             base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
             route_url = f"{base_url}?route_id={selected_route_id}"
-
-            # Генерируем QR-код
             qr = qrcode.QRCode(version=1, box_size=6, border=2)
             qr.add_data(route_url)
             qr.make(fit=True)
             qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
-
-            # Создаём новое изображение с местом для текста
             from PIL import ImageDraw, ImageFont, Image
             width, height = qr_img.size
-            # Добавляем снизу 30 пикселей для подписи
             new_height = height + 30
             combined = Image.new("RGB", (width, new_height), "white")
             combined.paste(qr_img, (0, 0))
-
-            # Рисуем текст
             draw = ImageDraw.Draw(combined)
-            # Используем стандартный шрифт, т.к. системный может отсутствовать
             try:
                 font = ImageFont.truetype("arial.ttf", 12)
             except:
                 font = ImageFont.load_default()
-            # Получим ширину текста для центрирования
             text = route_url
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             text_x = (width - text_width) // 2
             draw.text((text_x, height + 5), text, fill="black", font=font)
-
-            # Конвертируем в base64
             buffer = io.BytesIO()
             combined.save(buffer, format="PNG")
             img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
-
             qr_block = html.Div([
-                html.Img(src=f"data:image/png;base64,{img_str}", style={"width": "160px", "display": "block", "margin": "0 auto"})
-            ], style={"textAlign": "center", "marginBottom": "20px"})
+                html.Img(src=f"data:image/png;base64,{img_str}",
+                         style={"width": "160px", "display": "block", "margin": "0 auto"})
+            ], className="text-center mb-3")
         except Exception as e:
             qr_block = html.Div(f"Ошибка QR-кода: {e}")
 
-    # Размещаем QR-код перед остальной информацией
-    info_html = html.Div([qr_block, info_html])
-    
-       
-    return fig, info_html
+    final_info = html.Div([
+        qr_block,
+        html.Div(info_card, style={'max-height': '70vh', 'overflow-y': 'auto', 'padding-right': '5px'})
+    ])
+    conn.close()
+    return fig, final_info
 
 # === ФИЛЬТРЫ ===
 
@@ -2748,27 +2665,68 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     height=450
                 )
                 
-                full_attraction_page_html = html.Div([
-                    html.H2(f"Информация о достопримечательности: {row_attr.get('Name', '')}"),
-                    
+##                full_attraction_page_html = html.Div([
+##                    html.H2(f"Информация о достопримечательности: {row_attr.get('Name', '')}"),
+##                    
+##                    html.Div([
+##                        # Левый блок: Информация и Медиа
+##                        html.Div([
+##                            html.Div(attr_info_content),
+##                            
+##                            html.H4("Медиа-контент:", style={'margin-top': '30px'}),
+##                            html.Div(media_content),
+##                        ], style={'width': '65%', 'display': 'inline-block'}),
+##                        
+##                        # Правый блок: Карта и Список маршрутов
+##                        html.Div([
+##                            dcc.Graph(figure=map_fig),
+##                            
+##                            html.H4("Входит в маршруты:", style={'margin-top': '30px'}),
+##                            html.Ul(routes_list_html),
+##                        ], style={'width': '35%', 'display': 'inline-block', 'padding-left': '20px'})
+##                    ])
+##                ])
+
+                                # --- Медиа-галерея ---
+                media_display = html.P("Медиа-контент отсутствует.")
+                if not media_df.empty:
+                    items = []
+                    for _, m in media_df.iterrows():
+                        if m['Type'] == 'photo':
+                            items.append(html.Div(
+                                html.Img(src=f"../assets/{m['File_Path']}",
+                                         style={'max-height':'300px', 'margin':'10px'}),
+                                className='col-auto'
+                            ))
+                        else:
+                            items.append(html.Div(
+                                html.Video(src=f"../assets/{m['File_Path']}", controls=True,
+                                           style={'max-height':'300px', 'width':'100%'}),
+                                className='col-auto'
+                            ))
+                    media_display = html.Div(items, className='d-flex flex-wrap')
+
+                left_col = dbc.Col([
                     html.Div([
-                        # Левый блок: Информация и Медиа
-                        html.Div([
-                            html.Div(attr_info_content),
-                            
-                            html.H4("Медиа-контент:", style={'margin-top': '30px'}),
-                            html.Div(media_content),
-                        ], style={'width': '65%', 'display': 'inline-block'}),
-                        
-                        # Правый блок: Карта и Список маршрутов
-                        html.Div([
-                            dcc.Graph(figure=map_fig),
-                            
-                            html.H4("Входит в маршруты:", style={'margin-top': '30px'}),
-                            html.Ul(routes_list_html),
-                        ], style={'width': '35%', 'display': 'inline-block', 'padding-left': '20px'})
-                    ])
+                        html.Div(attr_info_content, className='attr-info'),
+                        html.Hr(),
+                        html.H4("Медиа", className='mt-2'),
+                        media_display
+                    ], style={'max-height': '70vh', 'overflow-y': 'auto', 'padding-right': '10px'})
+                ], xs=12, md=7)
+
+                right_col = dbc.Col([
+                    dcc.Graph(figure=map_fig, style={'height': '450px'}),
+                    html.H4("Входит в маршруты", className='mt-4'),
+                    html.Ul(routes_list_html, className='list-unstyled')
+                ], xs=12, md=5)
+
+                full_attraction_page_html = html.Div([
+                    html.H2(f"Информация о достопримечательности: {row_attr.get('Name', '')}",
+                           className='mb-4'),
+                    dbc.Row([left_col, right_col])
                 ])
+                
                 
 
                 # Генерация QR-кода
@@ -2832,4 +2790,4 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
 
 
 if __name__ == '__main__':
-    app.run_server(debug=os.getenv('DEBUG', 'False').lower() == 'true')
+    app.run(debug=os.getenv('DEBUG', 'False').lower() == 'true')
