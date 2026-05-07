@@ -17,6 +17,7 @@ import qrcode
 import io
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
+import random
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -1800,8 +1801,8 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
                            showarrow=False, font=dict(size=14))
         return fig, [], [], None, "⚠️ Нет промежуточных точек", key
 
-    # Сбор точек: старт -> все выбранные -> финиш
-    points = [(start_lon, start_lat)]
+    # Исходные точки: старт -> достопримечательности -> финиш
+    base_points = [(start_lon, start_lat)]
     attr_names = []
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
@@ -1818,7 +1819,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         for item in selected_attrs:
             row = attr_dict.get(item['id'])
             if row:
-                points.append((float(row['Longitude']), float(row['Latitude'])))
+                base_points.append((float(row['Longitude']), float(row['Latitude'])))
                 attr_names.append(row['Name'])
         conn.close()
     except Exception as e:
@@ -1827,53 +1828,57 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
                            showarrow=False, font=dict(size=14, color='red'))
         return fig, [], [], None, f"❌ Ошибка получения координат: {e}", key
 
-    points.append((end_lon, end_lat))
+    base_points.append((end_lon, end_lat))
 
     base_url = "https://router.project-osrm.org/route/v1"
-    coords_str = ";".join([f"{lon},{lat}" for lon, lat in points])
-
     all_routes = []
     variants_geom = []
     options = []
-    seen_hashes = set()          # <-- ИНИЦИАЛИЗАЦИЯ (была пропущена)
+    seen_hashes = set()
     errors = []
+    num_variants = 5       # количество запросов со смещением
 
-    profiles = [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]
+    for attempt in range(num_variants):
+        # Смещаем промежуточные точки (достопримечательности), старт и финиш не трогаем
+        shifted_points = [base_points[0]]
+        for i in range(1, len(base_points) - 1):
+            lon, lat = base_points[i]
+            lat_shift = random.uniform(-0.00015, 0.00015)
+            lon_shift = random.uniform(-0.00015, 0.00015)
+            shifted_points.append((lon + lon_shift, lat + lat_shift))
+        shifted_points.append(base_points[-1])
 
-    for profile, profile_label in profiles:
-        url = f"{base_url}/{profile}/{coords_str}"
-        params = {
-            "alternatives": "3",   # запрашиваем до 3 вариантов (но сервер может вернуть 1)
-            "overview": "full",
-            "geometries": "geojson",
-            "steps": "false",
-        }
-        try:
-            resp = requests.get(url, params=params, timeout=15)
-            if resp.status_code != 200:
-                errors.append(f"{profile_label}: HTTP {resp.status_code}")
-                continue
-            data = resp.json()
-            if data.get("code") != "Ok" or "routes" not in data or not data["routes"]:
-                errors.append(f"{profile_label}: нет маршрутов")
-                continue
+        coords_str = ";".join([f"{lon},{lat}" for lon, lat in shifted_points])
 
-            for i, route in enumerate(data["routes"], start=1):
-                geom = route.get("geometry")
-                if not geom or "coordinates" not in geom:
+        for profile, profile_label in [("car", "🚗 Авто"), ("foot", "🚶 Пешком")]:
+            url = f"{base_url}/{profile}/{coords_str}"
+            params = {
+                "overview": "full",
+                "geometries": "geojson",
+                "steps": "false",
+            }
+            try:
+                resp = requests.get(url, params=params, timeout=15)
+                if resp.status_code != 200:
+                    errors.append(f"{profile_label} (попытка {attempt+1}): HTTP {resp.status_code}")
                     continue
-                # Убираем дубликаты по координатам
-                coord_tuple = tuple(tuple(pt) for pt in geom["coordinates"])
-                if coord_tuple in seen_hashes:
+                data = resp.json()
+                if data.get("code") != "Ok" or "routes" not in data or not data["routes"]:
                     continue
-                seen_hashes.add(coord_tuple)
-
-                label = f"{profile_label}, вариант {len(seen_hashes)}"
-                all_routes.append({'geometry': geom, 'label': label})
-                variants_geom.append(json.dumps(geom))
-                options.append({'label': label, 'value': len(options)})
-        except Exception as e:
-            errors.append(f"{profile_label}: {e}")
+                for route in data["routes"]:
+                    geom = route.get("geometry")
+                    if not geom or "coordinates" not in geom:
+                        continue
+                    coord_tuple = tuple(tuple(pt) for pt in geom["coordinates"])
+                    if coord_tuple in seen_hashes:
+                        continue
+                    seen_hashes.add(coord_tuple)
+                    label = f"{profile_label}, вариант {len(seen_hashes)}"
+                    all_routes.append({'geometry': geom, 'label': label})
+                    variants_geom.append(json.dumps(geom))
+                    options.append({'label': label, 'value': len(options)})
+            except Exception as e:
+                errors.append(f"{profile_label} (попытка {attempt+1}): {e}")
 
     if not all_routes:
         fig = go.Figure()
@@ -1881,7 +1886,7 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
         fig.add_annotation(text=msg, showarrow=False, font=dict(size=14, color='red'))
         return fig, [], [], None, f"❌ {msg}", key
 
-    # --- Отрисовка ---
+    # --- Отрисовка линий маршрутов ---
     fig = go.Figure()
     colors = ['blue', 'green', 'purple', 'orange', 'magenta', 'cyan']
     for idx, route in enumerate(all_routes):
@@ -1895,20 +1900,20 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             hoverinfo='skip'
         ))
 
-        # Подготовка маркеров с учётом совпадений старта/финиша
-    start_lon, start_lat = points[0]
-    finish_lon, finish_lat = points[-1]
+    # --- Отрисовка маркеров с учётом совпадений старта/финиша ---
+    start_lon, start_lat = base_points[0]
+    finish_lon, finish_lat = base_points[-1]
     tolerance = 1e-6
 
-    markers = []  # список кортежей (lat, lon, color, text)
+    markers = []          # (lat, lon, color, text)
     start_covered = False
     finish_covered = False
 
     # Промежуточные точки (достопримечательности)
-    for i, (lon, lat) in enumerate(points[1:-1], start=1):
+    for i, (lon, lat) in enumerate(base_points[1:-1], start=1):
         attr_name = attr_names[i-1]
         color = 'red'
-        text = attr_name
+        text = "№"+str(i)+". "+ attr_name
         if abs(lat - start_lat) < tolerance and abs(lon - start_lon) < tolerance:
             color = 'green'
             text = f"Старт: {attr_name}"
@@ -1919,13 +1924,12 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
             finish_covered = True
         markers.append((lat, lon, color, text))
 
-    # Добавляем старт и финиш, если они не покрыты
+    # Старт и финиш добавляем только если не перекрыты
     if not start_covered:
         markers.append((start_lat, start_lon, 'green', 'Старт'))
     if not finish_covered:
         markers.append((finish_lat, finish_lon, 'orange', 'Финиш'))
 
-    # Отрисовываем все маркеры
     for (lat, lon, color, text) in markers:
         fig.add_trace(go.Scattermapbox(
             lat=[lat], lon=[lon],
@@ -1941,13 +1945,13 @@ def build_osrm_variants(n_clicks, start_lat, start_lon, end_lat, end_lon, select
     fig.update_layout(
         mapbox_style="open-street-map",
         mapbox_zoom=10,
-        mapbox_center_lat=sum(p[1] for p in points)/len(points),
-        mapbox_center_lon=sum(p[0] for p in points)/len(points),
+        mapbox_center_lat=sum(p[1] for p in base_points)/len(base_points),
+        mapbox_center_lon=sum(p[0] for p in base_points)/len(base_points),
         margin={"r":0,"t":0,"l":0,"b":0},
         legend=dict(y=-0.1, yanchor='top', orientation='h')
     )
 
-    status = f"✅ Построено {len(all_routes)} вариантов (OSRM)"
+    status = f"✅ Построено {len(all_routes)} вариантов (публичный OSRM)"
     if errors:
         status += f" (ошибок: {len(errors)})"
     return fig, variants_geom, options, 0, status, key
