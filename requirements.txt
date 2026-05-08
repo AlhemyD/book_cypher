@@ -11,3 +11,4 @@ bcrypt
 Pillow
 qrcode
 requests
+geopy==2.4.1

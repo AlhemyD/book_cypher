@@ -18,6 +18,8 @@ import io
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import random
+from geopy.geocoders import Nominatim
+import time
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -158,6 +160,9 @@ def init_database():
 
 # Выполняем инициализацию при старте
 init_database()
+
+# Геокодер для поиска адресов (Nominatim OSM)
+geolocator = Nominatim(user_agent="tourism_isu_app")
 
 # --- ИНИЦИАЛИЗАЦИЯ DASH ПРИЛОЖЕНИЯ ---
 app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP],
@@ -1265,12 +1270,20 @@ def generate_attraction_form(attr_id):
                     )
                 ])
         fields.append(field)
-
-    # Предпросмотр на карте
-    fields.append(html.Div([
-        html.Label("Предпросмотр на карте"),
-        dcc.Graph(id='attraction-map-preview', style={'height': '300px'})
-    ]))
+        # Сразу после поля долготы добавляем поиск и мини‑карту
+        if col_name == 'Longitude':
+            fields.append(html.Div([
+                html.Label("Поиск места на карте"),
+                dcc.Input(id='attraction-search', type='text',
+                          placeholder='Введите адрес, название города или места',
+                          style={'width': '100%', 'margin-bottom': '5px'}),
+                dcc.Dropdown(id='attraction-search-results',
+                             options=[], placeholder='Результаты поиска...',
+                             clearable=True, style={'margin-bottom': '10px'}),
+                dcc.Store(id='attraction-search-coords', data=None),
+                html.Label("Предпросмотр (можно кликнуть для уточнения)"),
+                dcc.Graph(id='attraction-map-preview', style={'height': '300px'})
+            ]))
 
     # Медиа: загрузка и существующие файлы
     fields.append(html.Div([
@@ -1587,6 +1600,34 @@ def generate_route_form(route_id):
                 ])
         fields.append(field)
 
+    # --- Поиск и мини-карта точки старта ---
+    fields.append(html.Div([
+        html.Label("Поиск точки старта"),
+        dcc.Input(id='route-start-search', type='text',
+                  placeholder='Введите адрес или название места',
+                  style={'width': '100%', 'margin-bottom': '5px'}),
+        dcc.Dropdown(id='route-start-search-results',
+                     options=[], placeholder='Результаты поиска...',
+                     clearable=True, style={'margin-bottom': '10px'}),
+        dcc.Store(id='route-start-search-coords', data=None),
+        html.Label("Точка старта (кликните на карте для уточнения)"),
+        dcc.Graph(id='route-start-map-preview', style={'height': '250px'})
+    ]))
+
+    # --- Поиск и мини-карта точки финиша ---
+    fields.append(html.Div([
+        html.Label("Поиск точки финиша"),
+        dcc.Input(id='route-end-search', type='text',
+                  placeholder='Введите адрес или название места',
+                  style={'width': '100%', 'margin-bottom': '5px'}),
+        dcc.Dropdown(id='route-end-search-results',
+                     options=[], placeholder='Результаты поиска...',
+                     clearable=True, style={'margin-bottom': '10px'}),
+        dcc.Store(id='route-end-search-coords', data=None),
+        html.Label("Точка финиша (кликните на карте для уточнения)"),
+        dcc.Graph(id='route-end-map-preview', style={'height': '250px'})
+    ]))
+
     # --- БЛОК ДОСТОПРИМЕЧАТЕЛЬНОСТЕЙ (восстановлен полностью) ---
     fields.append(html.Hr())
     fields.append(html.H4("Достопримечательности маршрута"))
@@ -1602,8 +1643,18 @@ def generate_route_form(route_id):
         dcc.Input(id='new-attr-lat', type='number', placeholder='Широта'),
         html.Label("Долгота"),
         dcc.Input(id='new-attr-lon', type='number', placeholder='Долгота'),
+        html.Label("Поиск места"),
+        dcc.Input(id='new-attr-search', type='text',
+                  placeholder='Введите адрес или название места',
+                  style={'width': '100%', 'margin-bottom': '5px'}),
+        dcc.Dropdown(id='new-attr-search-results',
+                     options=[], placeholder='Результаты поиска...',
+                     clearable=True, style={'margin-bottom': '10px'}),
+        dcc.Store(id='new-attr-search-coords', data=None),
+        html.Label("Координаты на карте (кликните для уточнения)"),
+        dcc.Graph(id='new-attr-map-preview', style={'height': '250px'}),
         html.Button('Сохранить', id='save-new-attr-btn'),
-        html.Button('Отмена', id='cancel-new-attr-btn'),
+        html.Button('Отмена', id='cancel-new-attr-btn')
     ]))
     fields.append(html.Div(id='selected-attrs-list'))
 
@@ -2374,7 +2425,6 @@ def save_dict_record(n_clicks, edit_data, name, description, object_type_id, tab
     # Обновляем список и очищаем форму
     return load_dict_list(table_name), html.Div()
 
-# Предпросмотр координат на карте в форме достопримечательности
 @app.callback(
     Output('attraction-map-preview', 'figure'),
     Input({'type': 'attr-field', 'name': 'Latitude'}, 'value'),
@@ -2404,8 +2454,9 @@ def update_attraction_map_preview(lat, lon):
     fig = go.Figure(go.Scattermapbox(
         lat=[lat], lon=[lon], mode='markers',
         marker=dict(size=14, color='red'),
-        hovertemplate=f"Широта: {lat}<br>Долгота: {lon}<extra></extra>",
-        hoverinfo='skip'
+        text=[f"Широта: {lat:.6f}, Долгота: {lon:.6f}"],
+        hovertemplate="%{text}<extra></extra>",
+        hoverinfo='text'
     ))
     fig.update_layout(
         mapbox_style="open-street-map",
@@ -2852,8 +2903,155 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
     return {'display': 'block'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'},{'display':'none'}, None, "/"
 
 
+# ================== ПОИСК КООРДИНАТ ЧЕРЕЗ NOMINATIM ==================
 
-            
+# Кэш для результатов поиска (чтобы не нагружать Nominatim)
+_search_cache = {}
+
+def _search_location(query):
+    """Возвращает список вариантов для dcc.Dropdown: [{'label': адрес, 'value': 'lat,lon'}, ...]"""
+    if not query or len(query.strip()) < 3:
+        return []
+    query = query.strip()
+    # Проверяем кэш
+    if query in _search_cache:
+        return _search_cache[query]
+    try:
+        time.sleep(1.2)   # обязательно ждём, чтобы не получить блокировку
+        locations = geolocator.geocode(query, exactly_one=False, limit=5, language='ru')
+        if not locations:
+            _search_cache[query] = []
+            return []
+        result = [{'label': loc.address, 'value': f"{loc.latitude},{loc.longitude}"} for loc in locations]
+        _search_cache[query] = result
+        return result
+    except Exception as e:
+        print(f"Ошибка геокодирования: {e}")
+        _search_cache[query] = []
+        return []
+
+
+def _mini_map_figure(lat, lon, color='red'):
+    """Создаёт фигуру Plotly с одним маркером на карте."""
+    fig = go.Figure(go.Scattermapbox(
+        lat=[lat], lon=[lon], mode='markers',
+        marker=dict(size=14, color=color),
+        text=[f"Широта: {lat:.6f}, Долгота: {lon:.6f}"],
+        hovertemplate="%{text}<extra></extra>",
+        hoverinfo='text'
+    ))
+    fig.update_layout(
+        mapbox_style="open-street-map",
+        mapbox_zoom=12,
+        mapbox_center_lat=lat,
+        mapbox_center_lon=lon,
+        margin={"r":0, "t":0, "l":0, "b":0},
+        height=250
+    )
+    return fig
+
+
+# ---------- Достопримечательность ----------
+@app.callback(
+    Output('attraction-search-results', 'options'),
+    Input('attraction-search', 'value'),
+    prevent_initial_call=True
+)
+def search_attraction(query):
+    return _search_location(query)
+
+
+@app.callback(
+    Output('attraction-search-coords', 'data'),
+    Output('attraction-map-preview', 'figure', allow_duplicate=True),
+    Output({'type': 'attr-field', 'name': 'Latitude'}, 'value', allow_duplicate=True),
+    Output({'type': 'attr-field', 'name': 'Longitude'}, 'value', allow_duplicate=True),
+    Input('attraction-search-results', 'value'),
+    prevent_initial_call=True
+)
+def select_attraction_location(choice):
+    if not choice:
+        raise PreventUpdate
+    lat, lon = map(float, choice.split(','))
+    return f"{lat},{lon}", _mini_map_figure(lat, lon, 'red'), round(lat, 7), round(lon, 7)
+
+
+# ---------- Стартовая точка ----------
+@app.callback(
+    Output('route-start-search-results', 'options'),
+    Input('route-start-search', 'value'),
+    prevent_initial_call=True
+)
+def search_start(query):
+    return _search_location(query)
+
+
+@app.callback(
+    Output('route-start-search-coords', 'data'),
+    Output('route-start-map-preview', 'figure', allow_duplicate=True),
+    Output({'type': 'route-field', 'name': 'Start_Point_Latitude'}, 'value', allow_duplicate=True),
+    Output({'type': 'route-field', 'name': 'Start_Point_Longitude'}, 'value', allow_duplicate=True),
+    Input('route-start-search-results', 'value'),
+    prevent_initial_call=True
+)
+def select_start_location(choice):
+    if not choice:
+        raise PreventUpdate
+    lat, lon = map(float, choice.split(','))
+    return f"{lat},{lon}", _mini_map_figure(lat, lon, 'green'), round(lat, 7), round(lon, 7)
+
+
+# ---------- Конечная точка ----------
+@app.callback(
+    Output('route-end-search-results', 'options'),
+    Input('route-end-search', 'value'),
+    prevent_initial_call=True
+)
+def search_end(query):
+    return _search_location(query)
+
+
+@app.callback(
+    Output('route-end-search-coords', 'data'),
+    Output('route-end-map-preview', 'figure', allow_duplicate=True),
+    Output({'type': 'route-field', 'name': 'End_Point_Latitude'}, 'value', allow_duplicate=True),
+    Output({'type': 'route-field', 'name': 'End_Point_Longitude'}, 'value', allow_duplicate=True),
+    Input('route-end-search-results', 'value'),
+    prevent_initial_call=True
+)
+def select_end_location(choice):
+    if not choice:
+        raise PreventUpdate
+    lat, lon = map(float, choice.split(','))
+    return f"{lat},{lon}", _mini_map_figure(lat, lon, 'orange'), round(lat, 7), round(lon, 7)
+
+
+# ---------- Новая достопримечательность (модальное окно) ----------
+
+
+@app.callback(
+    Output('new-attr-search-results', 'options'),
+    Input('new-attr-search', 'value'),
+    prevent_initial_call=True
+)
+def search_new_attr(query):
+    return _search_location(query)
+
+
+@app.callback(
+    Output('new-attr-search-coords', 'data'),
+    Output('new-attr-map-preview', 'figure', allow_duplicate=True),
+    Output('new-attr-lat', 'value', allow_duplicate=True),
+    Output('new-attr-lon', 'value', allow_duplicate=True),
+    Input('new-attr-search-results', 'value'),
+    prevent_initial_call=True
+)
+def select_new_attr_location(choice):
+    if not choice:
+        raise PreventUpdate
+    lat, lon = map(float, choice.split(','))
+    return f"{lat},{lon}", _mini_map_figure(lat, lon, 'red'), round(lat, 7), round(lon, 7)
+
 
 
 if __name__ == '__main__':
