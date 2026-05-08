@@ -338,78 +338,75 @@ app.layout = html.Div([
         
         html.H1("Визуализация туристических маршрутов", style={'textAlign': 'center'}),
 
-     # НОВЫЙ БЛОК: Фильтр по локации
+         # Единый контейнер для всех фильтров
     html.Div([
-        html.Label("Выберите административную локацию:"),
-        dcc.Dropdown(
-            id='location-filter',
-            placeholder="Выберите локацию...",
-            clearable=False,
-            options=[], # Опции загрузятся из БД
-            value=1 # По умолчанию ID 1 (Россия)
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '20px'}),
-    html.Div([
-        html.Label("Фильтр по достопримечательностям:"),
-        dcc.Dropdown(
-            id='attraction-filter',
-            placeholder="Выберите достопримечательности...",
-            multi=True,
-            clearable=True,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-
-    html.Div([
-        html.Label("Тип маршрута:"),
-        dcc.Dropdown(
-            id='route-type-filter',
-            placeholder="Любой",
-            clearable=True,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-
-    html.Div([
-        html.Label("Сложность:"),
-        dcc.Dropdown(
-            id='difficulty-filter',
-            placeholder="Любая",
-            clearable=True,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-
-    html.Div([
-        html.Label("Сезон:"),
-        dcc.Dropdown(
-            id='season-filter',
-            placeholder="Любой",
-            clearable=True,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-
-    html.Div([
-        html.Label("Тема маршрута:"),
-        dcc.Dropdown(
-            id='route-theme-filter',
-            placeholder="Любая",
-            clearable=True,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '10px'}),
-    
-    html.Div([
-        html.Label("Выберите маршрут:"),
-        dcc.Dropdown(
-            id='route-dropdown',
-            placeholder="Выберите маршрут...",
-            clearable=False,
-            value=None,
-            options=[]
-        ),
-    ], style={'width': '50%', 'margin': 'auto', 'padding': '20px'}),
+        html.Div([
+            html.Label("Выберите административную локацию:"),
+            dcc.Dropdown(
+                id='location-filter',
+                placeholder="Выберите локацию...",
+                clearable=False,
+                options=[],
+                value=1
+            ),
+        ]),
+        html.Div([
+            html.Label("Фильтр по достопримечательностям:"),
+            dcc.Dropdown(
+                id='attraction-filter',
+                placeholder="Выберите достопримечательности...",
+                multi=True,
+                clearable=True,
+                options=[]
+            ),
+        ]),
+        html.Div([
+            html.Label("Тип маршрута:"),
+            dcc.Dropdown(
+                id='route-type-filter',
+                placeholder="Любой",
+                clearable=True,
+                options=[]
+            ),
+        ]),
+        html.Div([
+            html.Label("Сложность:"),
+            dcc.Dropdown(
+                id='difficulty-filter',
+                placeholder="Любая",
+                clearable=True,
+                options=[]
+            ),
+        ]),
+        html.Div([
+            html.Label("Сезон:"),
+            dcc.Dropdown(
+                id='season-filter',
+                placeholder="Любой",
+                clearable=True,
+                options=[]
+            ),
+        ]),
+        html.Div([
+            html.Label("Тема маршрута:"),
+            dcc.Dropdown(
+                id='route-theme-filter',
+                placeholder="Любая",
+                clearable=True,
+                options=[]
+            ),
+        ]),
+        html.Div([
+            html.Label("Выберите маршрут:"),
+            dcc.Dropdown(
+                id='route-dropdown',
+                placeholder="Выберите маршрут...",
+                clearable=False,
+                value=None,
+                options=[]
+            ),
+        ]),
+    ], style={'width': '50%', 'margin': 'auto', 'display': 'flex', 'flexDirection': 'column', 'gap': '10px'}),
     html.Div([
         dbc.Row([
             dbc.Col(dcc.Graph(id='map-graph', style={'height': '500px'}), xs=12, md=8),
