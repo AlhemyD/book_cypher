@@ -20,6 +20,7 @@ import dash_bootstrap_components as dbc
 import random
 from geopy.geocoders import Nominatim
 import time
+import csv, zipfile
 
 # Загружаем переменные окружения из .env файла
 load_dotenv()
@@ -46,6 +47,32 @@ def bring_address(cursor, admin_location):
     # Инвертируем порядок элементов, чтобы получился правильный адрес сверху-вниз
     full_path.reverse()
     return ', '.join(full_path)
+
+def find_admin_location(address_str, cursor):
+    """
+    Ищет Admin_Location_ID по строке адреса 'Страна, Область, Район, Город'.
+    Возвращает (admin_location_id, error_message).
+    Если не найден – error_message не None.
+    """
+    if not address_str:
+        return None, "Пустая строка адреса."
+    parts = [p.strip() for p in address_str.split(',')]
+    parent_id = None
+    for i, part in enumerate(parts):
+        cursor.execute(
+            """SELECT Admin_Location_ID FROM Admin_Location
+               WHERE Name = %s AND (Parent_ID = %s OR (Parent_ID IS NULL AND %s IS NULL))
+                 """,
+            (part, parent_id, parent_id)
+        )
+        row = cursor.fetchone()
+        if not row and parent_id == None:
+            return None, (f"Не найдено административное расположение: '{part}' "
+                          f"(уровень {i+1}) в адресе «{address_str}».")
+        elif not row:
+            return parent_id, None
+        parent_id = row['Admin_Location_ID']
+    return parent_id, None
 
 def get_admin_location_options():
     conn = mysql.connector.connect(**DB_CONFIG)
@@ -467,11 +494,13 @@ app.layout = html.Div([
     #Макет административной панели
     html.Div(id='admin-page-layout', style={'display': 'none'}, children=[
         html.H2("Панель администратора"),
+        dcc.Download(id='download-csv'),
         html.A("На главную", href="/", style={'margin-bottom': '10px', 'display': 'block'}),
         dcc.Tabs(id="admin-tabs", value='tab-attractions', children=[
             dcc.Tab(label='Достопримечательности', value='tab-attractions'),
             dcc.Tab(label='Маршруты', value='tab-routes'),
             dcc.Tab(label='Справочники', value='tab-dicts'),
+            dcc.Tab(label='Загрузка CSV', value='tab-csv'),
         ]),
         html.Div(id='admin-content')
     ])
@@ -931,9 +960,18 @@ def update_map_and_info(selected_route_id, geo_data, href):
             buffer = io.BytesIO()
             combined.save(buffer, format="PNG")
             img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            qr_img_el = html.Img(src=f"data:image/png;base64,{img_str}",
+                                 style={"width": "160px", "display": "block", "margin": "0 auto"})
+            qr_download_btn = html.A(
+                "Скачать QR-код",
+                download=f"qrcode_route_{selected_route_id}.png",
+                href=f"data:image/png;base64,{img_str}",
+                className="btn btn-outline-primary btn-sm",
+                style={"margin-top": "5px"}
+            )
             qr_block = html.Div([
-                html.Img(src=f"data:image/png;base64,{img_str}",
-                         style={"width": "160px", "display": "block", "margin": "0 auto"})
+                qr_img_el,
+                qr_download_btn,
             ], className="text-center mb-3")
         except Exception as e:
             qr_block = html.Div(f"Ошибка QR-кода: {e}")
@@ -1143,6 +1181,7 @@ def render_admin_tab(tab):
             html.H3("Список маршрутов"),
             dcc.Dropdown(id='route-admin-select', placeholder='Выберите маршрут'),
             html.Button('Новый', id='new-route-btn', n_clicks=0),
+            html.Button('Скачать CSV', id='btn-export-route-csv', n_clicks=0),
             html.Br(),
             html.Div(id='route-edit-form')
         ])
@@ -1171,6 +1210,27 @@ def render_admin_tab(tab):
             html.Button('Добавить запись', id='dict-add-btn'),
             html.Div(id='dict-list-container'),
             html.Div(id='dict-edit-form')
+        ])
+    elif tab == 'tab-csv':
+        return html.Div([
+            html.H3("Загрузка маршрута и достопримечательностей из CSV"),
+            html.P("Выберите одновременно файл маршрута (маршрут_ШАБЛОН.csv) и файл достопримечательностей (достопримечательность_ШАБЛОН.csv)."),
+            dcc.Upload(
+                id='upload-csv-route',
+                children=html.Div(['Перетащите или ', html.A('выберите файл маршрута')]),
+                multiple=False,
+                accept='.csv',
+                style={'border': '1px dashed', 'padding': '10px', 'margin-bottom': '10px'}
+            ),
+            dcc.Upload(
+                id='upload-csv-attractions',
+                children=html.Div(['Перетащите или ', html.A('выберите файл достопримечательностей')]),
+                multiple=False,
+                accept='.csv',
+                style={'border': '1px dashed', 'padding': '10px', 'margin-bottom': '20px'}
+            ),
+            html.Button('Загрузить в базу', id='btn-process-csv', n_clicks=0),
+            html.Div(id='csv-upload-status')
         ])
     return "Выберите вкладку"
 
@@ -1518,7 +1578,7 @@ def handle_media_delete(n_clicks_list, attr_id):
 )
 def update_route_list(search):
     conn = mysql.connector.connect(**DB_CONFIG)
-    df = pd.read_sql("SELECT Route_ID AS value, Name AS label FROM Routes", conn)
+    df = pd.read_sql("SELECT Route_ID AS value, Name AS label FROM Routes WHERE Deleted = 0", conn)
     conn.close()
     return df.to_dict('records')
 
@@ -2881,8 +2941,18 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                         combined.save(buffer, format="PNG")
                         img_str = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
+                        qr_img_el = html.Img(src=f"data:image/png;base64,{img_str}",
+                                             style={"width": "160px", "display": "block", "margin": "0 auto"})
+                        qr_download_btn = html.A(
+                            "Скачать QR-код",
+                            download=f"qrcode_attraction_{attraction_id}.png",
+                            href=f"data:image/png;base64,{img_str}",
+                            className="btn btn-outline-primary btn-sm",
+                            style={"margin-top": "5px"}
+                        )
                         qr_block = html.Div([
-                            html.Img(src=f"data:image/png;base64,{img_str}", style={"width": "160px", "display": "block", "margin": "0 auto"})
+                            qr_img_el,
+                            qr_download_btn,
                         ], style={"textAlign": "center", "marginBottom": "20px"})
                     except Exception as e:
                         qr_block = html.Div(f"Ошибка QR-кода: {e}")
@@ -3053,6 +3123,509 @@ def select_new_attr_location(choice):
     return f"{lat},{lon}", _mini_map_figure(lat, lon, 'red'), round(lat, 7), round(lon, 7)
 
 
+# ================== ИМПОРТ CSV (админка – вкладка "Загрузка CSV") ==================
+# ================== ИМПОРТ CSV (админка – вкладка "Загрузка CSV") ==================
+@app.callback(
+    Output('csv-upload-status', 'children'),
+    Input('btn-process-csv', 'n_clicks'),
+    State('upload-csv-route', 'contents'),
+    State('upload-csv-route', 'filename'),
+    State('upload-csv-attractions', 'contents'),
+    State('upload-csv-attractions', 'filename'),
+    prevent_initial_call=True
+)
+def process_csv_files(n_clicks, route_contents, route_filename,
+                      attr_contents, attr_filename):
+    if not n_clicks or not route_contents or not attr_contents:
+        return "Пожалуйста, загрузите оба файла."
+
+    # Безопасное преобразование в float
+    def safe_float(value, default=None):
+        if value is None or str(value).strip() == '':
+            return default
+        try:
+            return float(str(value).replace(',', '.'))
+        except (ValueError, TypeError):
+            return default
+
+    # Декодируем содержимое из base64
+    try:
+        _, content_string = route_contents.split(',')
+        route_csv = base64.b64decode(content_string).decode('utf-8-sig')
+        _, content_string2 = attr_contents.split(',')
+        attr_csv = base64.b64decode(content_string2).decode('utf-8-sig')
+    except Exception:
+        return "Ошибка чтения файлов. Проверьте формат."
+
+    # Парсим CSV с разделителем ';'
+    route_reader = csv.DictReader(io.StringIO(route_csv), delimiter=';')
+    attr_reader = csv.DictReader(io.StringIO(attr_csv), delimiter=';')
+
+    route_rows = list(route_reader)
+    attr_rows = list(attr_reader)
+
+    if not route_rows:
+        return "Файл маршрута пуст или не содержит данных."
+    if len(route_rows) != 1:
+        return "Файл маршрута должен содержать ровно одну строку данных (заголовок + 1 строка)."
+
+    # Нормализуем все ключи к нижнему регистру для простоты обращения
+    route_data = {k.lower(): v for k, v in route_rows[0].items()}
+    attr_list = []
+    for row in attr_rows:
+        norm_row = {k.lower(): v for k, v in row.items()}
+        attr_list.append(norm_row)
+
+    # Обязательные поля маршрута в терминах нижнего регистра
+    route_required = ['name', 'start_point_latitude', 'start_point_longitude',
+                      'end_point_latitude', 'end_point_longitude']
+    missing_route = [f for f in route_required if f not in route_data or not str(route_data[f]).strip()]
+    if missing_route:
+        return f"В файле маршрута отсутствуют обязательные поля: {', '.join(missing_route)}"
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        # Вспомогательная функция поиска/создания справочников
+        def get_or_create_simple(table, pk, name_col, name_val):
+            if not name_val:
+                return None
+            cursor.execute(f"SELECT {pk} FROM {table} WHERE {name_col} = %s AND Deleted = 0", (name_val,))
+            row = cursor.fetchone()
+            if row:
+                return row[pk]
+            cursor.execute(f"INSERT INTO {table} ({name_col}) VALUES (%s)", (name_val,))
+            conn.commit()
+            return cursor.lastrowid
+
+        # --- Справочники маршрута (необязательные – если есть в файле) ---
+        route_type_id = get_or_create_simple('Route_Types', 'Route_Type_ID', 'Name', route_data.get('route_type'))
+        route_theme_id = get_or_create_simple('Route_Themes', 'Route_Theme_ID', 'Name', route_data.get('route_theme'))
+        difficulty_id = get_or_create_simple('Difficulties', 'Difficulty_ID', 'Name', route_data.get('difficulty'))
+        season_id = get_or_create_simple('Seasons', 'Season_ID', 'Name', route_data.get('season'))
+        ltm_id = get_or_create_simple('Length_Time_Metrics', 'Length_Time_Metric_ID', 'Name', route_data.get('length_time_metric'))
+
+        # Административная локация маршрута (может отсутствовать)
+        admin_loc_id_route = None
+        admin_loc = route_data.get('admin_location', '').strip()
+        if admin_loc:
+            admin_loc_id_route, loc_error = find_admin_location(admin_loc, cursor)
+            if loc_error:
+                return f"Ошибка в адресе маршрута: {loc_error}"
+
+        # Формируем поля для вставки
+        route_fields = ['Name', 'Start_Point_Latitude', 'Start_Point_Longitude',
+                        'End_Point_Latitude', 'End_Point_Longitude']
+        route_values = [
+            route_data['name'],
+            safe_float(route_data['start_point_latitude']),
+            safe_float(route_data['start_point_longitude']),
+            safe_float(route_data['end_point_latitude']),
+            safe_float(route_data['end_point_longitude'])
+        ]
+
+        # Необязательные поля добавляем динамически, если они присутствуют и не пустые
+        optional_route_fields = {
+            'route_type_id': ('Route_Type_ID', route_type_id),
+            'route_theme_id': ('Route_Theme_ID', route_theme_id),
+            'difficulty_id': ('Difficulty_ID', difficulty_id),
+            'length': ('Length', safe_float(route_data.get('length'))),
+            'length_time': ('Length_Time', safe_float(route_data.get('length_time'))),
+            'length_time_metric_id': ('Length_Time_Metric_ID', ltm_id),
+            'description': ('Description', route_data.get('description')),
+            'recommendations': ('Recommendations', route_data.get('recommendations')),
+            'season_id': ('Season_ID', season_id),
+            'organisators_contacts': ('Organisators_Contacts', route_data.get('organisators_contacts')),
+            'admin_location_id': ('Admin_Location_ID', admin_loc_id_route),
+            'route_geometry': ('route_geometry', route_data.get('route_geometry'))  # особое имя в БД
+        }
+
+        for csv_key, (db_col, value) in optional_route_fields.items():
+            if value is not None and (not isinstance(value, str) or value.strip()):
+                route_fields.append(db_col)
+                route_values.append(value)
+
+        # Всегда добавляем Creator и Last Updated
+        route_fields.extend(['Creator_User_ID', 'Last_Updated_User_ID'])
+        route_values.extend([session.get('user_id'), session.get('user_id')])
+
+        placeholders = ', '.join(['%s'] * len(route_fields))
+        route_insert = f"INSERT INTO Routes ({', '.join(route_fields)}) VALUES ({placeholders})"
+        cursor.execute(route_insert, route_values)
+        route_id = cursor.lastrowid
+
+        # --- Достопримечательности ---
+        for idx, attr in enumerate(attr_list, start=1):
+            # Обязательные поля
+            missing_attr = [f for f in ['name', 'latitude', 'longitude'] if f not in attr or not str(attr[f]).strip()]
+            if missing_attr:
+                return f"Ошибка в достопримечательности №{idx}: отсутствуют обязательные поля: {', '.join(missing_attr)}"
+
+            # Справочники
+            object_type_id = get_or_create_simple('Object_Types', 'Object_Type_ID', 'Name', attr.get('object_type'))
+            category_id = get_or_create_simple('Categories', 'Category_ID', 'Name', attr.get('category'))
+            object_value_id = get_or_create_simple('Object_Values', 'Object_Value_ID', 'Name', attr.get('object_value'))
+            ovs_id = get_or_create_simple('Object_Value_Statuses', 'Object_Value_Status_ID', 'Name', attr.get('object_value_status'))
+            recreation_pot_id = get_or_create_simple('Recreation_Potentials', 'Recreation_Potential_ID', 'Name', attr.get('recreation_potential'))
+            geomorph_id = get_or_create_simple('Geomorphologies', 'Geomorphology_ID', 'Name', attr.get('geomorphology'))
+            creation_purpose_id = get_or_create_simple('Creation_Purposes', 'Creation_Purpose_ID', 'Name', attr.get('creation_purpose'))
+            tech_cond_id = get_or_create_simple('Technical_Conditions', 'Technical_Condition_ID', 'Name', attr.get('technical_conditon'))
+            obj_status_id = get_or_create_simple('Object_Statuses', 'Object_Status_ID', 'Name', attr.get('object_status'))
+
+            # Автор
+            author_name = attr.get('author', '').strip()
+            author_id = None
+            if author_name:
+                cursor.execute("SELECT Author_ID FROM Authors WHERE Name = %s AND Deleted = 0", (author_name,))
+                row = cursor.fetchone()
+                if row:
+                    author_id = row['Author_ID']
+                else:
+                    desc = attr.get('author_description', '')
+                    cursor.execute("INSERT INTO Authors (Name, Description) VALUES (%s, %s)", (author_name, desc))
+                    conn.commit()
+                    author_id = cursor.lastrowid
+
+            # Владелец
+            owner_name = attr.get('owner', '').strip()
+            owner_id = None
+            if owner_name:
+                cursor.execute("SELECT Owner_ID FROM Owners WHERE Name = %s AND Deleted = 0", (owner_name,))
+                row = cursor.fetchone()
+                if row:
+                    owner_id = row['Owner_ID']
+                else:
+                    desc = attr.get('owner_description', '')
+                    cursor.execute("INSERT INTO Owners (Name, Description) VALUES (%s, %s)", (owner_name, desc))
+                    conn.commit()
+                    owner_id = cursor.lastrowid
+
+            # Административная локация
+            admin_loc_attr = attr.get('admin_location', '').strip()
+            admin_loc_id_attr = None
+            if admin_loc_attr:
+                admin_loc_id_attr, loc_error = find_admin_location(admin_loc_attr, cursor)
+                if loc_error:
+                    return f"Ошибка адреса достопримечательности '{attr['name']}' (строка {idx+1}): {loc_error}"
+
+            # Ключевая точка
+            key_city_id = None
+            key_city_name = attr.get('key_city', '').strip()
+            if key_city_name:
+                key_city_id, key_error = find_admin_location(key_city_name, cursor)
+                if key_error:
+                    return f"Ошибка ключевой точки для '{attr['name']}': {key_error}"
+
+            # Динамически строим INSERT, включая только непустые поля
+            attr_fields = ['Name', 'Latitude', 'Longitude']
+            attr_values_params = [attr['name'], safe_float(attr['latitude']), safe_float(attr['longitude'])]
+
+            optional_attr = {
+                'Object_Type_ID': object_type_id,
+                'Category_ID': category_id,
+                'Description': attr.get('description'),
+                'Admin_Location_ID': admin_loc_id_attr,
+                'Accessibility': attr.get('accessibility'),
+                'City_Distance': safe_float(attr.get('city_distance')),
+                'Key_City_ID': key_city_id,
+                'History': attr.get('history'),
+                'Legends': attr.get('legends'),
+                'Object_Value_ID': object_value_id,
+                'Object_Value_Status_ID': ovs_id,
+                'Object_Value_Description': attr.get('object_value_description'),
+                'Modernity': attr.get('modernity'),
+                'Recreation_Potential_ID': recreation_pot_id,
+                'Recreation_Potential_Description': attr.get('recreation_potential_description'),
+                'Season_ID': season_id if attr.get('season') else None,   # используем сезон маршрута как запасной? Нет, лучше отдельно
+                # Но Season_ID может быть у достопримечательности своё, обработаем его ниже
+                'Time_Recommendation': attr.get('time_recommendation'),
+                'Visitor_Requirements': attr.get('visitor_requirements'),
+                'Rules': attr.get('rules'),
+                'Guides': attr.get('guides'),
+                'Price': safe_float(attr.get('price'), 0.0),
+                'Relief': attr.get('relief'),
+                'Geomorphology_ID': geomorph_id,
+                'Geologic': attr.get('geologic'),
+                'Climate': attr.get('climate'),
+                'Hydrology': attr.get('hydrology'),
+                'Flora_Fauna': attr.get('flora_fauna'),
+                'Ecologic': attr.get('ecologic'),
+                'Creation_Date': attr.get('creation_date'),
+                'Author_ID': author_id,
+                'Style_Architecture': attr.get('style_architecture'),
+                'Materials_and_Technologies': attr.get('materials_and_technologies'),
+                'Creation_Purpose_ID': creation_purpose_id,
+                'Technical_Condition_ID': tech_cond_id,
+                'Object_Status_ID': obj_status_id,
+                'Owner_ID': owner_id,
+                'Restoration_Works': attr.get('restoration_works'),
+                'TCI': attr.get('tci')
+            }
+
+            # Сезон может быть определён для достопримечательности отдельно
+            if attr.get('season'):
+                attr_season_id = get_or_create_simple('Seasons', 'Season_ID', 'Name', attr['season'])
+                optional_attr['Season_ID'] = attr_season_id
+
+            for db_col, val in optional_attr.items():
+                if val is not None and (not isinstance(val, str) or val.strip()):
+                    attr_fields.append(db_col)
+                    attr_values_params.append(val)
+
+            # Creator/Last_Updated
+            attr_fields.extend(['Creator_User_ID', 'Last_Updated_User_ID'])
+            attr_values_params.extend([session.get('user_id'), session.get('user_id')])
+
+            placeholders = ', '.join(['%s'] * len(attr_fields))
+            attr_insert = f"INSERT INTO Attractions ({', '.join(attr_fields)}) VALUES ({placeholders})"
+            cursor.execute(attr_insert, attr_values_params)
+            attr_id = cursor.lastrowid
+
+            # Связь с маршрутом
+            number = int(attr.get('number', idx))
+            cursor.execute(
+                "INSERT INTO Routes_Attractions (Route_ID, Attraction_ID, Number) VALUES (%s, %s, %s)",
+                (route_id, attr_id, number)
+            )
+
+            # Медиафайлы
+            photo_list = attr.get('photo', '').split('|') if attr.get('photo') else []
+            video_list = attr.get('video', '').split('|') if attr.get('video') else []
+            for photo in photo_list:
+                photo = photo.strip()
+                if photo:
+                    cursor.execute(
+                        "INSERT INTO Media (Attraction_ID, Type, File_Path) VALUES (%s, 'photo', %s)",
+                        (attr_id, photo)
+                    )
+            for video in video_list:
+                video = video.strip()
+                if video:
+                    cursor.execute(
+                        "INSERT INTO Media (Attraction_ID, Type, File_Path) VALUES (%s, 'video', %s)",
+                        (attr_id, video)
+                    )
+
+        conn.commit()
+        return f"Успешно импортирован маршрут «{route_data['name']}» (ID: {route_id}) и {len(attr_list)} достопримечательностей."
+    except Exception as e:
+        conn.rollback()
+        return f"Ошибка импорта: {e}"
+    finally:
+        conn.close()
+# ================== ЭКСПОРТ CSV (кнопка в админке на вкладке "Маршруты") ==================
+@app.callback(
+    Output('download-csv', 'data'),
+    Input('btn-export-route-csv', 'n_clicks'),
+    State('route-admin-select', 'value'),
+    prevent_initial_call=True
+)
+def export_route_csv(n_clicks, route_id):
+    if not route_id:
+        raise PreventUpdate
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+    try:
+        # Данные маршрута
+        query_route = """
+            SELECT r.*, 
+                   rt.Name as Route_Type_Name,
+                   rth.Name as Route_Theme_Name,
+                   d.Name as Difficulty_Name,
+                   ltm.Name as Length_Time_Metric_Name,
+                   s.Name as Season_Name
+            FROM Routes r
+            LEFT JOIN Route_Types rt ON r.Route_Type_ID = rt.Route_Type_ID
+            LEFT JOIN Route_Themes rth ON r.Route_Theme_ID = rth.Route_Theme_ID
+            LEFT JOIN Difficulties d ON r.Difficulty_ID = d.Difficulty_ID
+            LEFT JOIN Length_Time_Metrics ltm ON r.Length_Time_Metric_ID = ltm.Length_Time_Metric_ID
+            LEFT JOIN Seasons s ON r.Season_ID = s.Season_ID
+            WHERE r.Route_ID = %s AND r.Deleted = 0
+        """
+        cursor.execute(query_route, (route_id,))
+        route = cursor.fetchone()
+        if not route:
+            raise PreventUpdate
+
+        admin_location_route = bring_address(cursor, route['Admin_Location_ID']) if route['Admin_Location_ID'] else ''
+
+        # Достопримечательности маршрута с полными данными
+        query_attrs = """
+            SELECT ra.Number, a.*,
+                   ot.Name as Object_Type_Name,
+                   c.Name as Category_Name,
+                   ov.Name as Object_Value_Name,
+                   ovs.Name as Object_Value_Status_Name,
+                   rp.Name as Recreation_Potential_Name,
+                   g.Name as Geomorphology_Name,
+                   cp.Name as Creation_Purpose_Name,
+                   tc.Name as Technical_Condition_Name,
+                   os.Name as Object_Status_Name,
+                   aut.Name as Author_Name, aut.Description as Author_Desc,
+                   own.Name as Owner_Name, own.Description as Owner_Desc,
+                   s.Name as Season_Name
+            FROM Routes_Attractions ra
+            JOIN Attractions a ON ra.Attraction_ID = a.Attraction_ID AND a.Deleted = 0
+            LEFT JOIN Object_Types ot ON a.Object_Type_ID = ot.Object_Type_ID
+            LEFT JOIN Categories c ON a.Category_ID = c.Category_ID
+            LEFT JOIN Object_Values ov ON a.Object_Value_ID = ov.Object_Value_ID
+            LEFT JOIN Object_Value_Statuses ovs ON a.Object_Value_Status_ID = ovs.Object_Value_Status_ID
+            LEFT JOIN Recreation_Potentials rp ON a.Recreation_Potential_ID = rp.Recreation_Potential_ID
+            LEFT JOIN Geomorphologies g ON a.Geomorphology_ID = g.Geomorphology_ID
+            LEFT JOIN Creation_Purposes cp ON a.Creation_Purpose_ID = cp.Creation_Purpose_ID
+            LEFT JOIN Technical_Conditions tc ON a.Technical_Condition_ID = tc.Technical_Condition_ID
+            LEFT JOIN Object_Statuses os ON a.Object_Status_ID = os.Object_Status_ID
+            LEFT JOIN Authors aut ON a.Author_ID = aut.Author_ID
+            LEFT JOIN Owners own ON a.Owner_ID = own.Owner_ID
+            LEFT JOIN Seasons s ON a.Season_ID = s.Season_ID
+            WHERE ra.Route_ID = %s
+            ORDER BY ra.Number
+        """
+        cursor.execute(query_attrs, (route_id,))
+        attrs = cursor.fetchall()
+
+        # ---- Формирование CSV для маршрута ----
+        route_header = [
+            'name', 'route_type', 'route_theme', 'difficulty', 'length', 'length_time',
+            'length_time_metric', 'description', 'recommendations', 'season',
+            'organisators_contacts', 'admin_location', 'start_point_latitude',
+            'start_point_longitude', 'end_point_latitude', 'end_point_longitude',
+            'route_geometry' 
+        ]
+        route_geometry = route.get('route_geometry', '')  # строка JSON или None
+        if route_geometry is None:
+            route_geometry = ''
+        elif isinstance(route_geometry, str):
+            # оставляем как есть
+            pass
+        else:
+            # на случай, если объект dict или list – преобразуем в JSON
+            import json
+            route_geometry = json.dumps(route_geometry)
+        
+        route_row = [
+            route['Name'] or '',
+            route['Route_Type_Name'] or '',
+            route['Route_Theme_Name'] or '',
+            route['Difficulty_Name'] or '',
+            str(route['Length']) if route['Length'] is not None else '',
+            str(route['Length_Time']) if route['Length_Time'] is not None else '',
+            route['Length_Time_Metric_Name'] or '',
+            route['Description'] or '',
+            route['Recommendations'] or '',
+            route['Season_Name'] or '',
+            route['Organisators_Contacts'] or '',
+            admin_location_route,
+            str(route['Start_Point_Latitude']) if route['Start_Point_Latitude'] is not None else '',
+            str(route['Start_Point_Longitude']) if route['Start_Point_Longitude'] is not None else '',
+            str(route['End_Point_Latitude']) if route['End_Point_Latitude'] is not None else '',
+            str(route['End_Point_Longitude']) if route['End_Point_Longitude'] is not None else '',
+            route_geometry
+        ]
+
+        # ---- Формирование CSV для достопримечательностей ----
+        attr_header = [
+            'number', 'name', 'object_type', 'category', 'description', 'admin_location',
+            'latitude', 'longitude', 'accessibility', 'city_distance', 'key_city',
+            'history', 'legends', 'object_value', 'object_value_status',
+            'object_value_description', 'modernity', 'recreation_potential',
+            'recreation_potential_description', 'season', 'time_recommendation',
+            'visitor_requirements', 'rules', 'guides', 'price', 'relief',
+            'geomorphology', 'geologic', 'climate', 'hydrology', 'flora_fauna',
+            'ecologic', 'creation_date', 'author', 'author_description',
+            'style_architecture', 'materials_and_technologies', 'creation_purpose',
+            'technical_conditon', 'object_status', 'owner', 'owner_description',
+            'restoration_works', 'photo', 'video'
+        ]
+        attr_rows = []
+        for a in attrs:
+            admin_loc_attr = bring_address(cursor, a['Admin_Location_ID']) if a['Admin_Location_ID'] else ''
+            key_city_name = ''
+            if a['Key_City_ID']:
+                key_city_name = bring_address(cursor, a['Key_City_ID'])
+
+            # Собираем медиа для этой достопримечательности
+            cursor.execute("SELECT Type, File_Path FROM Media WHERE Attraction_ID = %s", (a['Attraction_ID'],))
+            media_files = cursor.fetchall()
+            photos = '|'.join(m['File_Path'] for m in media_files if m['Type'] == 'photo')
+            videos = '|'.join(m['File_Path'] for m in media_files if m['Type'] == 'video')
+
+            row = [
+                str(a['Number']),
+                a['Name'] or '',
+                a['Object_Type_Name'] or '',
+                a['Category_Name'] or '',
+                a['Description'] or '',
+                admin_loc_attr,
+                str(a['Latitude']) if a['Latitude'] is not None else '',
+                str(a['Longitude']) if a['Longitude'] is not None else '',
+                a['Accessibility'] or '',
+                str(a['City_Distance']) if a['City_Distance'] is not None else '',
+                key_city_name,
+                a['History'] or '',
+                a['Legends'] or '',
+                a['Object_Value_Name'] or '',
+                a['Object_Value_Status_Name'] or '',
+                a['Object_Value_Description'] or '',
+                a['Modernity'] or '',
+                a['Recreation_Potential_Name'] or '',
+                a['Recreation_Potential_Description'] or '',
+                a['Season_Name'] or '',
+                a['Time_Recommendation'] or '',
+                a['Visitor_Requirements'] or '',
+                a['Rules'] or '',
+                a['Guides'] or '',
+                str(a['Price']) if a['Price'] is not None else '',
+                a['Relief'] or '',
+                a['Geomorphology_Name'] or '',
+                a['Geologic'] or '',
+                a['Climate'] or '',
+                a['Hydrology'] or '',
+                a['Flora_Fauna'] or '',
+                a['Ecologic'] or '',
+                a['Creation_Date'] or '',
+                a['Author_Name'] or '',
+                a['Author_Desc'] or '',
+                a['Style_Architecture'] or '',
+                a['Materials_and_Technologies'] or '',
+                a['Creation_Purpose_Name'] or '',
+                a['Technical_Condition_Name'] or '',
+                a['Object_Status_Name'] or '',
+                a['Owner_Name'] or '',
+                a['Owner_Desc'] or '',
+                a['Restoration_Works'] or '',
+                photos,
+                videos
+            ]
+            attr_rows.append(row)
+
+        # Упаковываем всё в ZIP-архив
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # Маршрут
+            route_csv_buffer = io.StringIO()
+            writer = csv.writer(route_csv_buffer, delimiter=';', quoting=csv.QUOTE_ALL)
+            writer.writerow(route_header)
+            writer.writerow(route_row)
+            zf.writestr('маршрут.csv', route_csv_buffer.getvalue().encode('utf-8-sig'))
+
+            # Достопримечательности
+            attr_csv_buffer = io.StringIO()
+            writer = csv.writer(attr_csv_buffer, delimiter=';', quoting=csv.QUOTE_ALL)
+            writer.writerow(attr_header)
+            for row in attr_rows:
+                writer.writerow(row)
+            zf.writestr('достопримечательности.csv', attr_csv_buffer.getvalue().encode('utf-8-sig'))
+
+        zip_buffer.seek(0)
+        return dcc.send_bytes(zip_buffer.getvalue(), filename=f'route_{route_id}_export.zip')
+
+    except Exception as e:
+        raise PreventUpdate
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('DEBUG', 'False').lower() == 'true')

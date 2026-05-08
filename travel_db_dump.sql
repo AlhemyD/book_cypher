@@ -59,8 +59,8 @@ CREATE TABLE `attractions` (
   `Category_ID` int DEFAULT NULL,
   `Description` text,
   `Admin_Location_ID` int DEFAULT NULL,
-  `Latitude` decimal(10,7) DEFAULT NULL,
-  `Longitude` decimal(10,7) DEFAULT NULL,
+  `Latitude` decimal(10,7) NOT NULL,
+  `Longitude` decimal(10,7) NOT NULL,
   `Accessibility` text,
   `City_Distance` decimal(10,7) DEFAULT NULL,
   `Key_City_ID` int DEFAULT NULL,
@@ -133,7 +133,7 @@ CREATE TABLE `attractions` (
   CONSTRAINT `attractions_ibfk_7` FOREIGN KEY (`Recreation_Potential_ID`) REFERENCES `recreation_potentials` (`Recreation_Potential_ID`),
   CONSTRAINT `attractions_ibfk_8` FOREIGN KEY (`Season_ID`) REFERENCES `seasons` (`Season_ID`),
   CONSTRAINT `attractions_ibfk_9` FOREIGN KEY (`Geomorphology_ID`) REFERENCES `geomorphologies` (`Geomorphology_ID`)
-) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -314,7 +314,7 @@ CREATE TABLE `media` (
   PRIMARY KEY (`Media_ID`),
   KEY `Attraction_ID` (`Attraction_ID`),
   CONSTRAINT `media_ibfk_1` FOREIGN KEY (`Attraction_ID`) REFERENCES `attractions` (`Attraction_ID`) ON DELETE CASCADE
-) ENGINE=InnoDB AUTO_INCREMENT=14 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=23 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -364,7 +364,7 @@ CREATE TABLE `object_types` (
   `Name` varchar(255) NOT NULL,
   `Deleted` tinyint DEFAULT '0',
   PRIMARY KEY (`Object_Type_ID`)
-) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=7 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -373,7 +373,7 @@ CREATE TABLE `object_types` (
 
 LOCK TABLES `object_types` WRITE;
 /*!40000 ALTER TABLE `object_types` DISABLE KEYS */;
-INSERT INTO `object_types` VALUES (1,'Антропогенный',0),(2,'Природный',0),(3,'Дом',1);
+INSERT INTO `object_types` VALUES (1,'Антропогенный',0),(2,'Природный',0),(3,'Дом',1),(5,'Дом',1),(6,'Дом',1);
 /*!40000 ALTER TABLE `object_types` ENABLE KEYS */;
 UNLOCK TABLES;
 
@@ -577,7 +577,7 @@ CREATE TABLE `routes` (
   `Start_Point_Longitude` decimal(10,7) NOT NULL,
   `End_Point_Latitude` decimal(10,7) NOT NULL,
   `End_Point_Longitude` decimal(10,7) NOT NULL,
-  `route_geometry` json NOT NULL,
+  `route_geometry` json DEFAULT NULL,
   `Created` datetime DEFAULT CURRENT_TIMESTAMP,
   `Last_Updated` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `Creator_User_ID` int DEFAULT NULL,
@@ -600,7 +600,7 @@ CREATE TABLE `routes` (
   CONSTRAINT `routes_ibfk_6` FOREIGN KEY (`Admin_Location_ID`) REFERENCES `admin_location` (`Admin_Location_ID`),
   CONSTRAINT `routes_ibfk_7` FOREIGN KEY (`Creator_User_ID`) REFERENCES `users` (`User_ID`),
   CONSTRAINT `routes_ibfk_8` FOREIGN KEY (`Last_Updated_User_ID`) REFERENCES `users` (`User_ID`)
-) ENGINE=InnoDB AUTO_INCREMENT=2 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 /*!40101 SET character_set_client = @saved_cs_client */;
 
 --
@@ -729,4 +729,4 @@ UNLOCK TABLES;
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
--- Dump completed on 2026-05-09  4:22:00
+-- Dump completed on 2026-05-09  7:48:15
