@@ -1229,6 +1229,14 @@ def render_admin_tab(tab):
                 accept='.csv',
                 style={'border': '1px dashed', 'padding': '10px', 'margin-bottom': '20px'}
             ),
+            dcc.Upload(
+                id='upload-media-files',
+                children=html.Div(['Перетащите или ', html.A('выберите медиафайлы')]),
+                multiple=True,
+                accept='image/*,video/*',
+                style={'border': '1px dashed', 'padding': '10px', 'margin-bottom': '10px'}
+            ),
+            html.Div(id='media-files-status', style={'margin-bottom': '20px', 'font-style': 'italic'}),
             html.Button('Загрузить в базу', id='btn-process-csv', n_clicks=0),
             html.Div(id='csv-upload-status')
         ])
@@ -3135,12 +3143,28 @@ def select_new_attr_location(choice):
     State('upload-csv-route', 'filename'),
     State('upload-csv-attractions', 'contents'),
     State('upload-csv-attractions', 'filename'),
+    State('upload-media-files', 'contents'),      # новые
+    State('upload-media-files', 'filename'), 
     prevent_initial_call=True
 )
 def process_csv_files(n_clicks, route_contents, route_filename,
-                      attr_contents, attr_filename):
+                      attr_contents, attr_filename,
+                      media_contents, media_filenames):
     if not n_clicks or not route_contents or not attr_contents:
         return "Пожалуйста, загрузите оба файла."
+
+    # Сохраняем загруженные медиафайлы, если они были предоставлены
+    if media_contents and media_filenames:
+        for fcontent, fname in zip(media_contents, media_filenames):
+            try:
+                ctype, cstring = fcontent.split(',')
+                decoded = base64.b64decode(cstring)
+                # Записываем файл в папку assets с оригинальным именем (перезаписывая при необходимости)
+                dest_path = os.path.join('assets', fname)
+                with open(dest_path, 'wb') as f:
+                    f.write(decoded)
+            except Exception as e:
+                return f"Ошибка сохранения файла {fname}: {e}"
 
     # Безопасное преобразование в float
     def safe_float(value, default=None):
@@ -3663,6 +3687,17 @@ def show_attr_csv_filename(contents, filename):
     if contents is not None and filename:
         return html.Div(['Выбран файл достопримечательностей: ', html.B(filename)])
     return html.Div(['Перетащите или ', html.A('выберите файл достопримечательностей')])
+
+@app.callback(
+    Output('media-files-status', 'children'),
+    Input('upload-media-files', 'contents'),
+    State('upload-media-files', 'filename')
+)
+def update_media_files_status(contents, filenames):
+    if contents is not None:
+        return f"Загружено файлов: {len(contents)}"
+    return ""
+
 
 if __name__ == '__main__':
     app.run(debug=os.getenv('DEBUG', 'False').lower() == 'true')
