@@ -1472,7 +1472,10 @@ def handle_media_upload(contents_list, names_list, attr_id):
         content_type, content_string = content.split(',')
         decoded = base64.b64decode(content_string)
         ext = os.path.splitext(name)[1]
-        filename = f"{attr_id}_{uuid.uuid4().hex}{ext}"
+        if os.path.exists(os.path.join('assets', name)):
+            filename = f"{attr_id}_{uuid.uuid4().hex}{ext}"
+        else:
+            filename = name
         filepath = os.path.join('assets', filename)
         with open(filepath, 'wb') as f:
             f.write(decoded)
