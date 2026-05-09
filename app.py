@@ -3622,6 +3622,19 @@ def export_route_csv(n_clicks, route_id):
                 writer.writerow(row)
             zf.writestr('достопримечательности.csv', attr_csv_buffer.getvalue().encode('utf-8-sig'))
 
+                        # Сбор медиафайлов всех достопримечательностей маршрута
+            media_files = set()
+            for attr in attrs:
+                cursor.execute("SELECT File_Path FROM Media WHERE Attraction_ID = %s", (attr['Attraction_ID'],))
+                for row in cursor.fetchall():
+                    media_files.add(row['File_Path'])
+            # Добавляем существующие файлы в папку assets внутри архива
+            if media_files:
+                assets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'assets')
+                for m_path in media_files:
+                    full_path = os.path.join(assets_dir, m_path)
+                    if os.path.isfile(full_path):
+                        zf.write(full_path, os.path.join('assets', m_path))
         zip_buffer.seek(0)
         return dcc.send_bytes(zip_buffer.getvalue(), filename=f'route_{route_id}_export.zip')
 
