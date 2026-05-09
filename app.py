@@ -3630,5 +3630,26 @@ def export_route_csv(n_clicks, route_id):
     finally:
         conn.close()
 
+# --- Отображение имён выбранных CSV-файлов ---
+@app.callback(
+    Output('upload-csv-route', 'children'),
+    Input('upload-csv-route', 'contents'),
+    State('upload-csv-route', 'filename')
+)
+def show_route_csv_filename(contents, filename):
+    if contents is not None and filename:
+        return html.Div(['Выбран файл маршрута: ', html.B(filename)])
+    return html.Div(['Перетащите или ', html.A('выберите файл маршрута')])
+
+@app.callback(
+    Output('upload-csv-attractions', 'children'),
+    Input('upload-csv-attractions', 'contents'),
+    State('upload-csv-attractions', 'filename')
+)
+def show_attr_csv_filename(contents, filename):
+    if contents is not None and filename:
+        return html.Div(['Выбран файл достопримечательностей: ', html.B(filename)])
+    return html.Div(['Перетащите или ', html.A('выберите файл достопримечательностей')])
+
 if __name__ == '__main__':
     app.run(debug=os.getenv('DEBUG', 'False').lower() == 'true')
