@@ -1,7 +1,7 @@
-.png
-.jpg
-.mp4
-.jpeg
+*.png
+*.jpg
+*.mp4
+*.jpeg
 
 
 # Created by https://www.toptal.com/developers/gitignore/api/python,flask,pycharm,pycharm+all,pycharm+iml
