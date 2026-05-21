@@ -495,6 +495,7 @@ app.layout = html.Div([
     html.Div(id='admin-page-layout', style={'display': 'none'}, children=[
         html.H2("Панель администратора"),
         dcc.Download(id='download-csv'),
+        dcc.Download(id='download-gpx'),
         html.A("На главную", href="/", style={'margin-bottom': '10px', 'display': 'block'}),
         dcc.Tabs(id="admin-tabs", value='tab-attractions', children=[
             dcc.Tab(label='Достопримечательности', value='tab-attractions'),
@@ -1182,6 +1183,7 @@ def render_admin_tab(tab):
             dcc.Dropdown(id='route-admin-select', placeholder='Выберите маршрут'),
             html.Button('Новый', id='new-route-btn', n_clicks=0),
             html.Button('Скачать CSV', id='btn-export-route-csv', n_clicks=0),
+            html.Button('Экспорт GPX', id='btn-export-route-gpx', n_clicks=0),
             html.Br(),
             html.Div(id='route-edit-form')
         ])
@@ -1326,17 +1328,18 @@ def generate_attraction_form(attr_id):
             ])
         else:
             dtype = col_meta['data_type'].lower()
+            is_required = (col_name in ('Latitude', 'Longitude', 'Name'))
             if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint', 'decimal', 'float', 'double'):
                 field = html.Div([
                     html.Label(label_name),
                     dcc.Input(id={'type': 'attr-field', 'name': col_name}, type='number', value=value,
-                              placeholder=f"Введите {label_name.lower()}")
+                              placeholder=f"Введите {label_name.lower()}", required=is_required)
                 ])
             elif dtype in ('datetime', 'timestamp'):
                 field = html.Div([
                     html.Label(label_name),
                     dcc.Input(id={'type': 'attr-field', 'name': col_name}, type='datetime-local', value=value,
-                              placeholder=f"Выберите {label_name.lower()}")
+                              placeholder=f"Выберите {label_name.lower()}", required=is_required)
                 ])
             else:
                 field = html.Div([
@@ -1345,7 +1348,7 @@ def generate_attraction_form(attr_id):
                         id={'type': 'attr-field', 'name': col_name},
                         value=value,
                         placeholder=f"Введите {label_name.lower()}",
-                        style={'width': '100%', 'height': 100}
+                        style={'width': '100%', 'height': 100}, required=is_required
                     )
                 ])
         fields.append(field)
@@ -1429,11 +1432,12 @@ def save_attraction(n_clicks, attr_id, values, ids):
         # Находим метаданные колонки для преобразования типов
         col_meta = next((m for m in ATTRACTION_META if m['name'] == col_name), None)
         if val is None or val == '':
-            if col_meta and col_meta['is_foreign']:
-                # Для внешнего ключа None означает NULL
-                data[col_name] = None
-            else:
-                continue  # пропускаем пустые необязательные поля
+            data[col_name] = None
+            # if col_meta and col_meta['is_foreign']:
+            #    # Для внешнего ключа None означает NULL
+            #    data[col_name] = None
+            #else:
+            #    continue  # пропускаем пустые необязательные поля
         else:
             # Преобразование типа
             if col_meta:
@@ -1451,6 +1455,13 @@ def save_attraction(n_clicks, attr_id, values, ids):
                     data[col_name] = str(val)
             else:
                 data[col_name] = val
+    # --- ВАЛИДАЦИЯ ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ ---
+    if not data.get('Name'):
+        return "Ошибка: Название достопримечательности не может быть пустым."
+    if data.get('Latitude') is None:
+        return "Ошибка: Широта не может быть пустой."
+    if data.get('Longitude') is None:
+        return "Ошибка: Долгота не может быть пустой."
     user_id = session.get('user_id', None)
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
@@ -1658,17 +1669,19 @@ def generate_route_form(route_id):
             ])
         else:
             dtype = col_meta['data_type'].lower()
+            is_required = (col_name in ('Name','Start_Point_Latitude', 'Start_Point_Longitude',
+                                            'End_Point_Latitude', 'End_Point_Longitude'))
             if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint', 'decimal', 'float', 'double'):
                 field = html.Div([
                     html.Label(label_name),
                     dcc.Input(id={'type': 'route-field', 'name': col_name}, type='number', value=value,
-                              placeholder=f"Введите {label_name.lower()}")
+                              placeholder=f"Введите {label_name.lower()}", required=is_required)
                 ])
             elif dtype in ('datetime', 'timestamp'):
                 field = html.Div([
                     html.Label(label_name),
                     dcc.Input(id={'type': 'route-field', 'name': col_name}, type='datetime-local', value=value,
-                              placeholder=f"Выберите {label_name.lower()}")
+                              placeholder=f"Выберите {label_name.lower()}", required=is_required)
                 ])
             else:
                 field = html.Div([
@@ -1677,7 +1690,7 @@ def generate_route_form(route_id):
                         id={'type': 'route-field', 'name': col_name},
                         value=value,
                         placeholder=f"Введите {label_name.lower()}",
-                        style={'width': '100%', 'height': 100}
+                        style={'width': '100%', 'height': 100}, required=is_required
                     )
                 ])
         fields.append(field)
@@ -1720,11 +1733,11 @@ def generate_route_form(route_id):
     ]))
     fields.append(html.Div(id='new-attr-modal', style={'display': 'none'}, children=[
         html.Label("Название"),
-        dcc.Input(id='new-attr-name', type='text', placeholder='Введите название'),
+        dcc.Input(id='new-attr-name', type='text', placeholder='Введите название', required=True),
         html.Label("Широта"),
-        dcc.Input(id='new-attr-lat', type='number', placeholder='Широта'),
+        dcc.Input(id='new-attr-lat', type='number', placeholder='Широта', required=True),
         html.Label("Долгота"),
-        dcc.Input(id='new-attr-lon', type='number', placeholder='Долгота'),
+        dcc.Input(id='new-attr-lon', type='number', placeholder='Долгота', required=True),
         html.Label("Поиск места"),
         dcc.Input(id='new-attr-search', type='text',
                   placeholder='Введите адрес или название места',
@@ -2108,25 +2121,38 @@ def save_route(n_clicks, route_id, values, ids, variant_idx, variants, selected_
         col_name = id_dict['name']
         col_meta = meta_dict.get(col_name)  # <-- теперь корректно
         if val is None or val == '':
-            if col_meta and col_meta['is_foreign']:
-                data[col_name] = None
-            continue
-        if col_meta:
-            dtype = col_meta['data_type'].lower()
-            if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint'):
-                data[col_name] = int(val)
-            elif dtype in ('decimal', 'float', 'double'):
-                data[col_name] = float(val)
-            elif dtype in ('datetime', 'timestamp'):
-                try:
-                    data[col_name] = datetime.strptime(val, '%Y-%m-%dT%H:%M')
-                except:
-                    data[col_name] = val
+            data[col_name] = None
+            #if col_meta and col_meta['is_foreign']:
+            #    data[col_name] = None
+        else:            
+            if col_meta:
+                dtype = col_meta['data_type'].lower()
+                if dtype in ('int', 'tinyint', 'smallint', 'mediumint', 'bigint'):
+                    data[col_name] = int(val)
+                elif dtype in ('decimal', 'float', 'double'):
+                    data[col_name] = float(val)
+                elif dtype in ('datetime', 'timestamp'):
+                    try:
+                        data[col_name] = datetime.strptime(val, '%Y-%m-%dT%H:%M')
+                    except:
+                        data[col_name] = val
+                else:
+                    data[col_name] = str(val)
             else:
-                data[col_name] = str(val)
-        else:
-            data[col_name] = val
+                data[col_name] = val
 
+    # --- ВАЛИДАЦИЯ ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ ---
+    if not data.get('Name'):
+        return "Ошибка: Название маршрута не может быть пустым."
+    if data.get('Start_Point_Latitude') is None:
+        return "Ошибка: Широта старта не может быть пустой."
+    if data.get('Start_Point_Longitude') is None:
+        return "Ошибка: Долгота старта не может быть пустой."
+    if data.get('End_Point_Latitude') is None:
+        return "Ошибка: Широта финиша не может быть пустой."
+    if data.get('End_Point_Longitude') is None:
+        return "Ошибка: Долгота финиша не может быть пустой."
+    
     # Геометрия
     route_geom = None
     if variants and variant_idx is not None and isinstance(variant_idx, int):
@@ -2783,7 +2809,9 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     return {'display': 'none'}, {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'}, html.Div("Достопримечательность не найдена."), pathname
 
                 # Получаем тип объекта из данных
-                object_type = row_attr.get("Object_Type_Name").lower()
+                object_type = row_attr.get("Object_Type_Name")
+                if object_type:
+                    object_type=object_type.lower()
                 
                 for col in attr_df.columns:
                     if col in ['Deleted','Attraction_ID', 'Latitude', 'Longitude'] or "_ID" in col and col not in ["Admin_Location_ID", "Key_City_ID"]:#, 'Object_Type_ID', 'Category_ID']:
@@ -3708,6 +3736,138 @@ def update_media_files_status(contents, filenames):
     if contents is not None:
         return f"Загружено файлов: {len(contents)}"
     return ""
+
+@app.callback(
+    Output('download-gpx', 'data'),
+    Input('btn-export-route-gpx', 'n_clicks'),
+    State('route-admin-select', 'value'),
+    prevent_initial_call=True
+)
+def export_route_gpx(n_clicks, route_id):
+    if not route_id:
+        raise PreventUpdate
+
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor(dictionary=True)
+
+    try:
+        # 1. Данные маршрута
+        cursor.execute("""
+            SELECT Name, Description, route_geometry
+            FROM Routes WHERE Route_ID = %s AND Deleted = 0
+        """, (route_id,))
+        route = cursor.fetchone()
+        if not route:
+            raise PreventUpdate
+
+        # 2. Точки маршрута в порядке: старт → достопримечательности → финиш
+        cursor.execute("""
+            SELECT
+                'start' as point_type,
+                r.Start_Point_Latitude as lat,
+                r.Start_Point_Longitude as lon,
+                'Старт маршрута' as name,
+                0 as number
+            FROM Routes r WHERE r.Route_ID = %s
+            UNION ALL
+            SELECT
+                'attraction',
+                a.Latitude,
+                a.Longitude,
+                a.Name,
+                ra.Number
+            FROM Routes_Attractions ra
+            JOIN Attractions a ON ra.Attraction_ID = a.Attraction_ID
+            WHERE ra.Route_ID = %s AND a.Deleted = 0
+            UNION ALL
+            SELECT
+                'finish',
+                r.End_Point_Latitude,
+                r.End_Point_Longitude,
+                'Финиш маршрута',
+                9999
+            FROM Routes r WHERE r.Route_ID = %s
+            ORDER BY number
+        """, (route_id, route_id, route_id))
+        points = cursor.fetchall()
+
+        # 3. Геометрия (если есть) – GeoJSON
+        geom = route['route_geometry']
+        if isinstance(geom, str) and geom:
+            try:
+                geom = json.loads(geom)
+            except:
+                geom = None
+
+        # 4. Генерация GPX
+        import xml.etree.ElementTree as ET
+        from xml.dom import minidom
+
+        gpx = ET.Element('gpx', version='1.1', creator='TravelApp',
+                         xmlns='http://www.topografix.com/GPX/1/1')
+        # Метаданные
+        metadata = ET.SubElement(gpx, 'metadata')
+        name_elem = ET.SubElement(metadata, 'name')
+        name_elem.text = route['Name'][:100] if route['Name'] else 'Маршрут'
+        if route.get('Description'):
+            desc_elem = ET.SubElement(metadata, 'desc')
+            desc_elem.text = route['Description'][:500]
+
+        # Трек
+        trk = ET.SubElement(gpx, 'trk')
+        trk_name = ET.SubElement(trk, 'name')
+        trk_name.text = route['Name'] or f'Маршрут {route_id}'
+        trk_seg = ET.SubElement(trk, 'trkseg')
+
+        # Если есть готовая геометрия – используем её
+        if geom and 'coordinates' in geom and isinstance(geom['coordinates'], list):
+            coords = geom['coordinates']
+            for lon, lat in coords:
+                trkpt = ET.SubElement(trk_seg, 'trkpt', lat=str(lat), lon=str(lon))
+        else:
+            # Иначе строим ломаную из точек
+            for p in points:
+                if p['lat'] is None or p['lon'] is None:
+                    continue
+                trkpt = ET.SubElement(trk_seg, 'trkpt', lat=str(p['lat']), lon=str(p['lon']))
+                # Можно добавить название точки в <name>
+                if p['point_type'] != 'attraction':
+                    name_elem = ET.SubElement(trkpt, 'name')
+                    name_elem.text = p['name']
+
+        # Waypoints для достопримечательностей, старта и финиша
+        for p in points:
+            if p['lat'] is None or p['lon'] is None:
+                continue
+            if p['point_type'] in ('attraction', 'start', 'finish'):
+                wpt = ET.SubElement(gpx, 'wpt', lat=str(p['lat']), lon=str(p['lon']))
+                name_wpt = ET.SubElement(wpt, 'name')
+                name_wpt.text = p['name']
+                sym = ET.SubElement(wpt, 'sym')
+                if p['point_type'] == 'start':
+                    sym.text = 'Flag, Green'
+                elif p['point_type'] == 'finish':
+                    sym.text = 'Flag, Red'
+                else:
+                    sym.text = 'Pin, Blue'
+                if p['point_type'] == 'attraction':
+                    number = ET.SubElement(wpt, 'number')
+                    number.text = str(p['number'])
+
+        # Преобразуем в строку с отступами
+        rough_string = ET.tostring(gpx, encoding='utf-8')
+        reparsed = minidom.parseString(rough_string)
+        gpx_str = reparsed.toprettyxml(indent="  ")
+        # Убираем лишние пустые строки
+        gpx_str = '\n'.join(line for line in gpx_str.split('\n') if line.strip())
+
+        return dcc.send_bytes(gpx_str.encode('utf-8'), filename=f"route_{route_id}.gpx")
+
+    except Exception as e:
+        print(f"Ошибка экспорта GPX: {e}")
+        raise PreventUpdate
+    finally:
+        conn.close()
 
 
 if __name__ == '__main__':
