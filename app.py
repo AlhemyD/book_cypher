@@ -3355,6 +3355,8 @@ def apply_selected_coords(coords):
 def process_csv_files(n_clicks, route_contents, route_filename,
                       attr_contents, attr_filename,
                       media_contents, media_filenames):
+    import sys
+    csv.field_size_limit(50 * 1024 * 1024)  # 50 МБ
     if not n_clicks or not route_contents or not attr_contents:
         return "Пожалуйста, загрузите оба файла."
 
@@ -3389,12 +3391,54 @@ def process_csv_files(n_clicks, route_contents, route_filename,
     except Exception:
         return "Ошибка чтения файлов. Проверьте формат."
 
-    # Парсим CSV с разделителем ';'
-    route_reader = csv.DictReader(io.StringIO(route_csv), delimiter=';')
-    attr_reader = csv.DictReader(io.StringIO(attr_csv), delimiter=';')
+        # --- НАДЁЖНЫЙ ПАРСИНГ CSV С ПОДДЕРЖКОЙ ПУСТЫХ ПОЛЕЙ ---
+    def parse_csv_to_dict(csv_content):
+        """Возвращает список словарей из CSV-строки с разделителем ';' и кавычками."""
+        try:
+            # Удаляем BOM, если есть
+            if csv_content.startswith('\ufeff'):
+                csv_content = csv_content[1:]
+            buffer = io.StringIO(csv_content)
+            # Настраиваем диалект
+            dialect = csv.excel()
+            dialect.delimiter = ';'
+            dialect.quoting = csv.QUOTE_ALL
+            reader = csv.reader(buffer, dialect)
+            headers = next(reader)
+            # Удаляем BOM из первого заголовка (на случай, если он остался)
+            headers[0] = headers[0].lstrip('\ufeff')
+            rows = []
+            for row_num, row in enumerate(reader, start=2):
+                # Пропускаем полностью пустые строки
+                if not any(field for field in row if field):
+                    continue
+                # Если полей меньше, чем заголовков, дополняем None
+                if len(row) < len(headers):
+                    row += [None] * (len(headers) - len(row))
+                # Если полей больше – обрезаем (не должно быть, но на всякий случай)
+                if len(row) > len(headers):
+                    row = row[:len(headers)]
+                # Создаём словарь, заменяя пустые строки на None
+                row_dict = {}
+                for idx, header in enumerate(headers):
+                    val = row[idx]
+                    if val is None or val == '':
+                        row_dict[header] = None
+                    else:
+                        row_dict[header] = val
+                rows.append(row_dict)
+            return rows
+        except StopIteration:
+            return []  # файл без данных
+        except Exception as e:
+            raise Exception(f"Ошибка разбора CSV: {e}")
 
-    route_rows = list(route_reader)
-    attr_rows = list(attr_reader)
+    # Применяем к загруженным файлам
+    try:
+        route_rows = parse_csv_to_dict(route_csv)
+        attr_rows = parse_csv_to_dict(attr_csv)
+    except Exception as e:
+        return str(e)
 
     if not route_rows:
         return "Файл маршрута пуст или не содержит данных."
@@ -3506,7 +3550,7 @@ def process_csv_files(n_clicks, route_contents, route_filename,
             obj_status_id = get_or_create_simple('Object_Statuses', 'Object_Status_ID', 'Name', attr.get('object_status'))
 
             # Автор
-            author_name = attr.get('author', '').strip()
+            author_name = (attr.get('author', '') or '').strip()
             author_id = None
             if author_name:
                 cursor.execute("SELECT Author_ID FROM Authors WHERE Name = %s AND Deleted = 0", (author_name,))
@@ -3520,7 +3564,7 @@ def process_csv_files(n_clicks, route_contents, route_filename,
                     author_id = cursor.lastrowid
 
             # Владелец
-            owner_name = attr.get('owner', '').strip()
+            owner_name = (attr.get('owner', '') or '').strip()
             owner_id = None
             if owner_name:
                 cursor.execute("SELECT Owner_ID FROM Owners WHERE Name = %s AND Deleted = 0", (owner_name,))
@@ -3534,7 +3578,7 @@ def process_csv_files(n_clicks, route_contents, route_filename,
                     owner_id = cursor.lastrowid
 
             # Административная локация
-            admin_loc_attr = attr.get('admin_location', '').strip()
+            admin_loc_attr = (attr.get('admin_location', '') or '').strip()
             admin_loc_id_attr = None
             if admin_loc_attr:
                 admin_loc_id_attr, loc_error = find_admin_location(admin_loc_attr, cursor)
@@ -3543,7 +3587,7 @@ def process_csv_files(n_clicks, route_contents, route_filename,
 
             # Ключевая точка
             key_city_id = None
-            key_city_name = attr.get('key_city', '').strip()
+            key_city_name = (attr.get('key_city', '') or '').strip()
             if key_city_name:
                 key_city_id, key_error = find_admin_location(key_city_name, cursor)
                 if key_error:
@@ -3622,8 +3666,8 @@ def process_csv_files(n_clicks, route_contents, route_filename,
             )
 
             # Медиафайлы
-            photo_list = attr.get('photo', '').split('|') if attr.get('photo') else []
-            video_list = attr.get('video', '').split('|') if attr.get('video') else []
+            photo_list = (attr.get('photo', '') or '').split('|') if attr.get('photo') else []
+            video_list = (attr.get('video', '') or '').split('|') if attr.get('video') else []
             for photo in photo_list:
                 photo = photo.strip()
                 if photo:
