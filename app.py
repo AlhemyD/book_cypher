@@ -1215,6 +1215,17 @@ def render_admin_tab(tab):
         return html.Div([
             html.H3("Загрузка маршрута и достопримечательностей из CSV"),
             html.P("Выберите одновременно файл маршрута (маршрут_ШАБЛОН.csv) и файл достопримечательностей (достопримечательность_ШАБЛОН.csv)."),
+            html.Div([
+                html.A("📄 Шаблон маршрута (CSV)", 
+                       href="/assets/маршрут_ШАБЛОН.csv",
+                       download="маршрут_ШАБЛОН.csv",
+                       className="btn btn-outline-primary btn-sm me-2"),
+                html.A("📄 Шаблон достопримечательностей (CSV)", 
+                       href="/assets/достопримечательность_ШАБЛОН.csv",
+                       download="достопримечательность_ШАБЛОН.csv",
+                       className="btn btn-outline-primary btn-sm")
+            ], style={'margin-bottom': '20px'}),
+            html.Hr(),
             dcc.Upload(
                 id='upload-csv-route',
                 children=html.Div(['Перетащите или ', html.A('выберите файл маршрута')]),
@@ -2772,7 +2783,7 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     return {'display': 'none'}, {'display': 'block'}, {'display': 'none'},{'display': 'none'},{'display': 'none'}, html.Div("Достопримечательность не найдена."), pathname
 
                 # Получаем тип объекта из данных
-                object_type = row_attr.get("Object_Type_ID")
+                object_type = row_attr.get("Object_Type_Name").lower()
                 
                 for col in attr_df.columns:
                     if col in ['Deleted','Attraction_ID', 'Latitude', 'Longitude'] or "_ID" in col and col not in ["Admin_Location_ID", "Key_City_ID"]:#, 'Object_Type_ID', 'Category_ID']:
@@ -2799,7 +2810,7 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                     # --- УСЛОВИЕ 1: ЕСЛИ ОБЪЕКТ ПРИРОДНЫЙ ---
                     # Скрываем поля, относящиеся к антропогенным объектам
 
-                    if object_type == "1":
+                    if object_type == "природный":
                         fields_to_hide_for_natural = [
                             'Creation_Date', 'Author_Name', 'Author_Description',
                                                   'Style_Architecture', 'Materials_and_Technologies',
@@ -2812,7 +2823,7 @@ def display_page(clickData, route_id, pathname, n_clicks, href):
                             continue # Пропускаем итерацию, не добавляем это поле
 
                     # --- УСЛОВИЕ 2: ЕСЛИ ОБЪЕКТ АНТРОПОГЕННЫЙ ---
-                    if object_type == "2":
+                    if object_type == "антропогенный":
                         fields_to_hide_for_anthropogenic = [
                             'Relief','Geomorphology_Name', 'Geologic', 'Climate', 'Hydrology', 'Flora_Fauna', 'Ecologic'
                         ]
