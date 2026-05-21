@@ -1,0 +1,62 @@
+/* Увеличенный базовый шрифт и комфортные отступы */
+body {
+    font-size: 18px;
+    line-height: 1.5;
+}
+
+h1, h2, h3, h4, h5 {
+    margin-top: 1rem;
+    margin-bottom: 0.75rem;
+}
+
+/* Кнопки и элементы форм – крупнее */
+.btn, button {
+    font-size: 1rem;
+    padding: 0.5rem 1.2rem;
+}
+.btn-sm {
+    font-size: 0.875rem;
+    padding: 0.25rem 0.7rem;
+}
+.form-control, .form-select, .dash-dropdown {
+    font-size: 1rem;
+    padding: 0.5rem;
+}
+textarea.form-control {
+    font-size: 1rem;
+}
+label {
+    font-weight: 500;
+    margin-bottom: 0.25rem;
+}
+
+/* Карточка информации о маршруте – читаемый шрифт */
+.card {
+    font-size: 0.95rem;
+}
+.card-header h4 {
+    font-size: 1.25rem;
+}
+
+/* Список достопримечательностей в форме маршрута – аккуратные кнопки */
+.selected-attrs-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #f8f9fa;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+}
+.selected-attrs-item span {
+    flex-grow: 1;
+}
+.selected-attrs-item button {
+    margin-left: 8px;
+}
+
+/* Контейнер фильтров – чуть шире и с отступами */
+.filter-container {
+    max-width: 600px;
+    margin: 0 auto 20px auto;
+}

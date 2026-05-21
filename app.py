@@ -371,7 +371,7 @@ app.layout = html.Div([
         html.H1("Визуализация туристических маршрутов", style={'textAlign': 'center'}),
 
          # Единый контейнер для всех фильтров
-    html.Div([
+    html.Div(className="filter-container", children=[
         html.Div([
             html.Label("Выберите административную локацию:"),
             dcc.Dropdown(
@@ -381,7 +381,7 @@ app.layout = html.Div([
                 options=[],
                 value=1
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Фильтр по достопримечательностям:"),
             dcc.Dropdown(
@@ -391,7 +391,7 @@ app.layout = html.Div([
                 clearable=True,
                 options=[]
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Тип маршрута:"),
             dcc.Dropdown(
@@ -400,7 +400,7 @@ app.layout = html.Div([
                 clearable=True,
                 options=[]
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Сложность:"),
             dcc.Dropdown(
@@ -409,7 +409,7 @@ app.layout = html.Div([
                 clearable=True,
                 options=[]
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Сезон:"),
             dcc.Dropdown(
@@ -418,7 +418,7 @@ app.layout = html.Div([
                 clearable=True,
                 options=[]
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Тема маршрута:"),
             dcc.Dropdown(
@@ -427,7 +427,7 @@ app.layout = html.Div([
                 clearable=True,
                 options=[]
             ),
-        ]),
+        ], className="mb-3"),
         html.Div([
             html.Label("Выберите маршрут:"),
             dcc.Dropdown(
@@ -437,14 +437,14 @@ app.layout = html.Div([
                 value=None,
                 options=[]
             ),
-        ]),
-    ], style={'width': '50%', 'margin': 'auto', 'display': 'flex', 'flexDirection': 'column', 'gap': '10px'}),
-    html.Div([
+        ], className="mb-3"),
+    ]),
+    html.Div(className="container-fluid px-md-5 mt-4", children=[
         dbc.Row([
             dbc.Col(dcc.Graph(id='map-graph', style={'height': '500px'}), xs=12, md=8),
             dbc.Col(html.Div(id='route-info-container'), xs=12, md=4)
         ])
-    ], className='container-fluid px-md-5'),
+    ]),
     # Скрытые элементы для хранения данных и работы с URL
      dcc.Store(id='routes-meta-store'), 
     dcc.Store(id='routes-data-store'), # Здесь хранятся только координаты точек
@@ -462,37 +462,56 @@ app.layout = html.Div([
     
     # === СТРАНИЦА ЛОГИНА ===
     html.Div(id='login-page-layout', style={'display': 'none'}, children=[
-        html.H2("Вход в систему"),
-        html.Div([
-            dcc.Input(id='login-username', type='text', placeholder='Логин'),
-            dcc.Input(id='login-password', type='password', placeholder='Пароль'),
-            html.Button('Войти', id='login-button'),
-            html.Div(id='login-error-message', style={'color': 'red'})
-        ]),
-        html.Br(),
-        html.A("На главную", href="/")
+        dbc.Container([
+            dbc.Row(dbc.Col(html.H2("Вход в систему", className="text-center my-4"), width=12)),
+            dbc.Row(dbc.Col(dbc.Card([
+                dbc.CardBody([
+                    # Убираем dbc.Form и dbc.FormGroup
+                    html.Div([
+                        dbc.Label("Логин", html_for="login-username"),
+                        dbc.Input(id='login-username', type='text', placeholder="Введите логин", className="mb-3"),
+                    ]),
+                    html.Div([
+                        dbc.Label("Пароль", html_for="login-password"),
+                        dbc.Input(id='login-password', type='password', placeholder="Введите пароль", className="mb-3"),
+                    ]),
+                    dbc.Button("Войти", id='login-button', color="primary", className="w-100 mt-2"),
+                    html.Div(id='login-error-message', className="text-danger mt-3 text-center"),
+                ])
+            ]), width=12, lg=6), className="justify-content-center"),
+            dbc.Row(dbc.Col(html.Div(html.A("На главную", href="/"), className="text-center mt-3"), width=12)),
+        ], className="py-5")
     ]),
 
     # === СТРАНИЦА РЕГИСТРАЦИИ ПОЛЬЗОВАТЕЛЯ (ТОЛЬКО АДМИН) ===
 
     html.Div(id='admin-register-page-layout', style={'display': 'none'}, children=[
-        html.H2("Регистрация нового пользователя"),
-        html.Div([
-            html.Label("Логин:"),
-            dcc.Input(id='register-username', type='text', placeholder='Логин'),
-            html.Label("Пароль:"),
-            dcc.Input(id='register-password', type='password', placeholder='Пароль'),
-            html.Label("Роль:"),
-            dcc.Dropdown(id='register-role', placeholder="Выберите роль", clearable=False),
-            html.Button('Зарегистрировать', id='register-button'),
-            html.Div(id='register-message')
-        ]),
-        html.Br(),
-        html.A("На главную", href="/")
+        dbc.Container([
+            dbc.Row(dbc.Col(html.H2("Регистрация нового пользователя", className="text-center my-4"), width=12)),
+            dbc.Row(dbc.Col(dbc.Card([
+                dbc.CardBody([
+                    html.Div([
+                        dbc.Label("Логин", html_for="register-username"),
+                        dbc.Input(id='register-username', type='text', placeholder="Логин", className="mb-3"),
+                    ]),
+                    html.Div([
+                        dbc.Label("Пароль", html_for="register-password"),
+                        dbc.Input(id='register-password', type='password', placeholder="Пароль", className="mb-3"),
+                    ]),
+                    html.Div([
+                        dbc.Label("Роль", html_for="register-role"),
+                        dcc.Dropdown(id='register-role', placeholder="Выберите роль", clearable=False, className="mb-3"),
+                    ]),
+                    dbc.Button("Зарегистрировать", id='register-button', color="success", className="w-100 mt-2"),
+                    html.Div(id='register-message', className="mt-3 text-center"),
+                ])
+            ]), width=12, lg=6), className="justify-content-center"),
+            dbc.Row(dbc.Col(html.Div(html.A("На главную", href="/"), className="text-center mt-3"), width=12)),
+        ], className="py-5")
     ]),
 
     #Макет административной панели
-    html.Div(id='admin-page-layout', style={'display': 'none'}, children=[
+    html.Div(id='admin-page-layout',className="container py-4", style={'display': 'none'}, children=[
         html.H2("Панель администратора"),
         dcc.Download(id='download-csv'),
         dcc.Download(id='download-gpx'),
@@ -1209,9 +1228,25 @@ def render_admin_tab(tab):
                 {'label': 'Единицы измерения', 'value': 'Length_Time_Metrics'},
                 {'label':'Роли пользователей', 'value':'Roles'}
             ], value='Object_Types'),
-            html.Button('Добавить запись', id='dict-add-btn'),
+            html.Button('Добавить запись', id='dict-add-btn', className="btn btn-primary mb-3"),
             html.Div(id='dict-list-container'),
-            html.Div(id='dict-edit-form')
+                # Модальное окно для добавления/редактирования
+            dbc.Modal([
+                dbc.ModalHeader(dbc.ModalTitle(id='dict-modal-title')),
+                dbc.ModalBody([
+                    dcc.Store(id='dict-edit-id-store', data=None),  # хранит {table, id, pk} для редактирования
+                    dbc.Label("Название"),
+                    dbc.Input(id='dict-modal-name', type='text', required=True),
+                    dbc.Label("Описание", id='dict-modal-description-label', style={'display': 'none'}),
+                    dbc.Textarea(id='dict-modal-description', style={'width': '100%', 'height': '100px', 'display': 'none'}),
+                    dbc.Label("Тип объекта", id='dict-modal-object-type-label', style={'display': 'none'}),
+                    dcc.Dropdown(id='dict-modal-object-type', style={'display': 'none'}),
+                ]),
+                dbc.ModalFooter([
+                    dbc.Button("Сохранить", id='dict-modal-save', color="primary"),
+                    dbc.Button("Отмена", id='dict-modal-cancel', color="secondary"),
+                ]),
+            ], id='dict-modal', is_open=False, size='lg')
         ])
     elif tab == 'tab-csv':
         return html.Div([
@@ -1254,6 +1289,173 @@ def render_admin_tab(tab):
             html.Div(id='csv-upload-status')
         ])
     return "Выберите вкладку"
+
+@app.callback(
+    Output('dict-modal', 'is_open'),
+    Output('dict-modal-title', 'children'),
+    Output('dict-edit-id-store', 'data'),
+    Output('dict-modal-name', 'value'),
+    Output('dict-modal-description', 'value'),
+    Output('dict-modal-object-type', 'value'),
+    Output('dict-modal-description-label', 'style'),
+    Output('dict-modal-description', 'style'),
+    Output('dict-modal-object-type-label', 'style'),
+    Output('dict-modal-object-type', 'style'),
+    Output('dict-modal-object-type', 'options'),   # <-- новый выход
+    Input('dict-add-btn', 'n_clicks'),
+    Input({'type': 'dict-edit', 'table': ALL, 'id': ALL}, 'n_clicks'),
+    State('dict-type-select', 'value'),
+    prevent_initial_call=True
+)
+def open_dict_modal(add_clicks, edit_clicks, table_name):
+    ctx = callback_context
+    if not ctx.triggered:
+        return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+    
+    trig = ctx.triggered[0]['prop_id'].split('.')[0]
+    
+    # Добавление новой записи
+    if trig == 'dict-add-btn' and add_clicks:
+        has_description = 'Description' in get_table_info(table_name)[1]
+        has_object_type = 'Object_Type_ID' in get_table_info(table_name)[1] and table_name.lower() != 'object_types'
+        options = []
+        if has_object_type:
+            conn_temp = mysql.connector.connect(**DB_CONFIG)
+            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn_temp)
+            conn_temp.close()
+            options = obj_df.to_dict('records') if not obj_df.empty else []
+        return (True, f"Добавить запись в {table_name}", None, "", "", None,
+                {'display': 'block'} if has_description else {'display': 'none'},
+                {'display': 'block', 'width': '100%', 'height': '100px'} if has_description else {'display': 'none'},
+                {'display': 'block'} if has_object_type else {'display': 'none'},
+                {'display': 'block'} if has_object_type else {'display': 'none'},
+                options)   # <-- добавить options в конец
+    
+    # Редактирование существующей записи
+    if trig.startswith('{') and 'dict-edit' in trig:
+        try:
+            props = json.loads(trig)
+            table = props['table']
+            rec_id = props['id']
+        except:
+            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+        
+        pk, cols = get_table_info(table)
+        name_col = 'Name' if 'Name' in cols else cols[1]
+        has_description = 'Description' in cols
+        has_object_type = 'Object_Type_ID' in cols
+        
+        conn = mysql.connector.connect(**DB_CONFIG)
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(f"SELECT {pk}, {name_col}, Description, Object_Type_ID FROM {table} WHERE {pk} = %s AND Deleted = 0", (rec_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+        
+        name = row[name_col]
+        description = row.get('Description', '') if has_description else ''
+        obj_type_id = row.get('Object_Type_ID') if has_object_type else None
+        
+        # Загружаем опции для Object_Type_ID, если нужно
+        options = []
+        if has_object_type:
+            conn2 = mysql.connector.connect(**DB_CONFIG)
+            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn2)
+            conn2.close()
+            options = obj_df.to_dict('records') if not obj_df.empty else []
+        
+        return (True, f"Редактировать {table}", {'table': table, 'id': rec_id, 'pk': pk},
+                name, description, obj_type_id,
+                {'display': 'block'} if has_description else {'display': 'none'},
+                {'display': 'block', 'width': '100%', 'height': '100px'} if has_description else {'display': 'none'},
+                {'display': 'block'} if has_object_type else {'display': 'none'},
+                {'display': 'block'} if has_object_type else {'display': 'none'},
+                options)   # <-- добавить options
+    
+    return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
+    #return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+
+@app.callback(
+    Output('dict-modal', 'is_open', allow_duplicate=True),
+    Output('dict-list-container', 'children', allow_duplicate=True),
+    Input('dict-modal-save', 'n_clicks'),
+    State('dict-edit-id-store', 'data'),
+    State('dict-modal-name', 'value'),
+    State('dict-modal-description', 'value'),
+    State('dict-modal-object-type', 'value'),
+    State('dict-type-select', 'value'),
+    prevent_initial_call=True
+)
+def save_dict_modal(n_clicks, edit_data, name, description, object_type_id, table_name):
+    if not n_clicks:
+        return False, dash.no_update
+    
+    if not table_name:
+        return False, html.Div("Ошибка: не выбран справочник", className="alert alert-danger")
+    if not name or not str(name).strip():
+        return False, html.Div("Ошибка: название не может быть пустым", className="alert alert-danger")
+    
+    pk, cols = get_table_info(table_name)
+    name_col = 'Name' if 'Name' in cols else cols[1]
+    has_description = 'Description' in cols
+    has_object_type = 'Object_Type_ID' in cols
+    
+    conn = mysql.connector.connect(**DB_CONFIG)
+    cursor = conn.cursor()
+    try:
+        if edit_data:
+            set_parts = [f"{name_col} = %s"]
+            params = [name]
+            if has_description:
+                set_parts.append("Description = %s")
+                params.append(description if description else '')
+            if has_object_type:
+                set_parts.append("Object_Type_ID = %s")
+                params.append(object_type_id)
+            params.append(edit_data['id'])
+            cursor.execute(
+                f"UPDATE {table_name} SET {', '.join(set_parts)} WHERE {edit_data['pk']} = %s AND Deleted = 0",
+                params
+            )
+        else:
+            columns = [name_col]
+            placeholders = ["%s"]
+            params = [name]
+            if has_description:
+                columns.append("Description")
+                placeholders.append("%s")
+                params.append(description if description else '')
+            if has_object_type:
+                columns.append("Object_Type_ID")
+                placeholders.append("%s")
+                params.append(object_type_id)
+            columns.append("Deleted")
+            placeholders.append("%s")
+            params.append(0)
+            cursor.execute(
+                f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
+                params
+            )
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        return False, html.Div(f"Ошибка БД: {e}", className="alert alert-danger")
+    finally:
+        conn.close()
+    
+    # Обновляем список и закрываем модалку
+    new_list = load_dict_list(table_name)
+    return False, new_list
+
+@app.callback(
+    Output('dict-modal', 'is_open', allow_duplicate=True),
+    Input('dict-modal-cancel', 'n_clicks'),
+    prevent_initial_call=True
+)
+def close_dict_modal(n_clicks):
+    return False
+
 
 # ================== РЕДАКТИРОВАНИЕ ДОСТОПРИМЕЧАТЕЛЬНОСТЕЙ ==================
 # Заполнение выпадающего списка
@@ -1394,7 +1596,7 @@ def generate_attraction_form(attr_id):
 
     fields.append(html.Button('Сохранить', id='save-attraction-btn'))
     if attr_id:
-        fields.append(html.Button('Удалить', id='delete-attraction-btn', style={'margin-left': '10px', 'background-color': 'red', 'color': 'white'}))
+        fields.append(html.Button('Удалить', id='delete-attraction-btn', className="ms-2"))
     fields.append(html.Div(id='attraction-save-status'))
     return html.Div(fields)
 
@@ -1732,24 +1934,26 @@ def generate_route_form(route_id):
         html.Button('Создать новую', id='new-attr-btn', n_clicks=0),
     ]))
     fields.append(html.Div(id='new-attr-modal', style={'display': 'none'}, children=[
-        html.Label("Название"),
-        dcc.Input(id='new-attr-name', type='text', placeholder='Введите название', required=True),
-        html.Label("Широта"),
-        dcc.Input(id='new-attr-lat', type='number', placeholder='Широта', required=True),
-        html.Label("Долгота"),
-        dcc.Input(id='new-attr-lon', type='number', placeholder='Долгота', required=True),
-        html.Label("Поиск места"),
-        dcc.Input(id='new-attr-search', type='text',
-                  placeholder='Введите адрес или название места',
-                  style={'width': '100%', 'margin-bottom': '5px'}),
-        dcc.Dropdown(id='new-attr-search-results',
-                     options=[], placeholder='Результаты поиска...',
-                     clearable=True, style={'margin-bottom': '10px'}),
-        dcc.Store(id='new-attr-search-coords', data=None),
-        html.Label("Координаты на карте (кликните для уточнения)"),
-        dcc.Graph(id='new-attr-map-preview', style={'height': '250px'}),
-        html.Button('Сохранить', id='save-new-attr-btn'),
-        html.Button('Отмена', id='cancel-new-attr-btn')
+        dbc.Card([
+            dbc.CardHeader("Создать новую достопримечательность"),
+            dbc.CardBody([
+                dcc.Store(id='new-attr-temp-coords', data=None),
+                dbc.Label("Название"),
+                dbc.Input(id='new-attr-name', type='text', required=True),
+                dbc.Label("Широта"),
+                dbc.Input(id='new-attr-lat', type='number', step='any', required=True),
+                dbc.Label("Долгота"),
+                dbc.Input(id='new-attr-lon', type='number', step='any', required=True),
+                dbc.Label("Поиск места"),
+                dbc.Input(id='new-attr-search', type='text', placeholder='Введите адрес...'),
+                dcc.Dropdown(id='new-attr-search-results', options=[], placeholder='Результаты...', persistence=False),
+                dbc.Label("Предпросмотр"),
+                dcc.Graph(id='new-attr-map-preview', style={'height': '250px'}),
+                html.Hr(),
+                dbc.Button("Сохранить", id='save-new-attr-btn', color="primary", className="me-2"),
+                dbc.Button("Отмена", id='cancel-new-attr-btn', color="secondary"),
+            ])
+        ])
     ]))
     fields.append(html.Div(id='selected-attrs-list'))
 
@@ -1760,7 +1964,7 @@ def generate_route_form(route_id):
     fields.append(dcc.RadioItems(id='select-osrm-variant', options=[], value=None))
     fields.append(html.Button("Сохранить маршрут", id='save-route-btn'))
     if route_id:
-        fields.append(html.Button('Удалить', id='delete-route-btn', style={'margin-left': '10px', 'background-color': 'red', 'color': 'white'}))
+        fields.append(html.Button('Удалить', id='delete-route-btn', className="ms-2"))
     fields.append(html.Div(id='route-save-status'))
 
     return html.Div(fields)
@@ -1826,22 +2030,21 @@ def add_attr_to_list(n_clicks, value, options, current_list):
     Output('new-attr-modal', 'style'),
     Input('new-attr-btn', 'n_clicks'),
     Input('cancel-new-attr-btn', 'n_clicks'),
-    State('new-attr-modal', 'style'),
+    Input('save-new-attr-btn', 'n_clicks'),
     prevent_initial_call=True
 )
-def toggle_modal(new_clicks, cancel_clicks, current_style):
+def toggle_modal(new_clicks, cancel_clicks, save_clicks):
     ctx = callback_context
     if not ctx.triggered:
-        return dash.no_update
-    trig = ctx.triggered[0]['prop_id'].split('.')[0]
-    if trig == 'new-attr-btn':
+        return {'display': 'none'}
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if button_id == 'new-attr-btn':
         return {'display': 'block'}
     return {'display': 'none'}
 
 # Сохранение новой достопримечательности и добавление её в список
 @app.callback(
     Output('selected-attrs-store', 'data', allow_duplicate=True),
-    Output('new-attr-modal', 'style', allow_duplicate=True),
     Input('save-new-attr-btn', 'n_clicks'),
     State('new-attr-name', 'value'),
     State('new-attr-lat', 'value'),
@@ -1851,8 +2054,8 @@ def toggle_modal(new_clicks, cancel_clicks, current_style):
 )
 def save_new_attr(n_clicks, name, lat, lon, current_list):
     if not n_clicks or not name or lat is None or lon is None:
-        return dash.no_update, dash.no_update
-    user_id=session.get('user_id', None)
+        return dash.no_update
+    user_id = session.get('user_id', None)
     conn = mysql.connector.connect(**DB_CONFIG)
     cursor = conn.cursor()
     cursor.execute("INSERT INTO Attractions (Name, Latitude, Longitude, Creator_User_ID, Last_Updated_User_ID) VALUES (%s, %s, %s, %s, %s)", (name, lat, lon, user_id, user_id))
@@ -1860,7 +2063,7 @@ def save_new_attr(n_clicks, name, lat, lon, current_list):
     conn.commit()
     conn.close()
     current_list.append({'id': new_id, 'name': name})
-    return current_list, {'display': 'none'}
+    return current_list
 
 # Отображение списка выбранных достопримечательностей с кнопками управления
 @app.callback(
@@ -1869,15 +2072,20 @@ def save_new_attr(n_clicks, name, lat, lon, current_list):
 )
 def render_selected_attrs(data):
     if not data:
-        return html.P("Нет добавленных достопримечательностей")
+        return html.P("Нет добавленных достопримечательностей", className="text-muted")
     items = []
     for i, item in enumerate(data):
-        items.append(html.Div([
-            html.Span(f"{i+1}. {item['name']} (ID: {item['id']})"),
-            html.Button('↑', id={'type': 'move-attr-up', 'index': i}, disabled=i==0),
-            html.Button('↓', id={'type': 'move-attr-down', 'index': i}, disabled=i==len(data)-1),
-            html.Button('Удалить', id={'type': 'remove-attr', 'index': i})
-        ], style={'margin': '5px'}))
+        items.append(html.Div(
+            className="selected-attrs-item",
+            children=[
+                html.Span(f"{i+1}. {item['name']} (ID: {item['id']})"),
+                html.Div([
+                    html.Button('↑', id={'type': 'move-attr-up', 'index': i}, disabled=(i==0), className="btn btn-sm btn-secondary"),
+                    html.Button('↓', id={'type': 'move-attr-down', 'index': i}, disabled=(i==len(data)-1), className="btn btn-sm btn-secondary ms-1"),
+                    html.Button('Удалить', id={'type': 'remove-attr', 'index': i}, className="btn btn-sm btn-danger ms-2"),
+                ])
+            ]
+        ))
     return html.Div(items)
 
 # Перемещение элементов вверх/вниз и удаление
@@ -2264,7 +2472,7 @@ def get_table_info(table_name):
 )
 def load_dict_list(table_name):
     if not table_name:
-        return "Выберите справочник"
+        return html.Div("Выберите справочник", className="alert alert-info")
     pk, cols = get_table_info(table_name)
     name_col = 'Name' if 'Name' in cols else cols[1]
     extra_cols = [c for c in cols if c not in (pk, name_col, 'Deleted')]
@@ -2279,7 +2487,7 @@ def load_dict_list(table_name):
         conn.close()
 
         if df.empty:
-            return html.Div("Нет записей")
+            return html.Div("Нет записей", className="alert alert-warning")
 
         items = []
         for _, row in df.iterrows():
@@ -2296,14 +2504,23 @@ def load_dict_list(table_name):
                     conn2.close()
                 except:
                     pass
-            items.append(html.Div([
-                html.Span(display_text),
-                html.Button('Удалить', id={'type': 'dict-delete', 'table': table_name, 'id': row[pk]}),
-                html.Button('Редактировать', id={'type': 'dict-edit', 'table': table_name, 'id': row[pk]})
-            ], style={'margin': '5px'}))
-        return html.Ul(items)
+            items.append(
+                dbc.ListGroupItem(
+                    [
+                        html.Span(display_text, className="flex-grow-1"),
+                        html.Div([
+                            dbc.Button("Редактировать", id={'type': 'dict-edit', 'table': table_name, 'id': row[pk]},
+                                       size="sm", color="secondary", className="me-2"),
+                            dbc.Button("Удалить", id={'type': 'dict-delete', 'table': table_name, 'id': row[pk]},
+                                       size="sm", color="danger"),
+                        ])
+                    ],
+                    className="d-flex justify-content-between align-items-center"
+                )
+            )
+        return dbc.ListGroup(items, flush=True)
     except Error as e:
-        return f"Ошибка: {e}"
+        return html.Div(f"Ошибка: {e}", className="alert alert-danger")
 
 
 @app.callback(
@@ -2341,197 +2558,134 @@ def delete_dict_entry(n_clicks_list, table_name):
     return load_dict_list(table_name)
 
 
-@app.callback(
-    Output('dict-edit-form', 'children'),
-    Input({'type': 'dict-edit', 'table': ALL, 'id': ALL}, 'n_clicks'),
-    Input('dict-add-btn', 'n_clicks'),
-    State('dict-type-select', 'value'),
-    prevent_initial_call=True
-)
-def show_dict_edit_form(edit_clicks, add_clicks, table_name):
-    ctx = callback_context
-    if not ctx.triggered:
-        return dash.no_update
-
-    triggered = ctx.triggered[0]
-    triggered_prop = triggered['prop_id']
-    pk, cols = get_table_info(table_name)
-    name_col = 'Name' if 'Name' in cols else cols[1]
-    has_description = 'Description' in cols
-    has_object_type = 'Object_Type_ID' in cols and table_name.lower() != "object_types"
-
-    # --- Добавление новой записи ---
-    if 'dict-add-btn' in triggered_prop and add_clicks:
-        fields = [
-            dcc.Store(id='dict-edit-id', data=None),
-            html.Label("Название"),
-            dcc.Input(id='dict-name-input', type='text'),
-            html.Div([
-                html.Label("Описание"),
-                dcc.Textarea(          # для авторов/владельцев – многострочное поле
-                    id='dict-description-input',
-                    style={'width': '100%', 'height': 100}
-                )
-            ], style={'display': 'block' if has_description else 'none'}),
-            html.Div([
-                html.Label("Тип объекта"),
-                dcc.Dropdown(id='dict-object-type-id', placeholder="Выберите тип объекта")
-            ], style={'display': 'block' if has_object_type else 'none'}),
-        ]
-        if has_object_type:
-            conn = mysql.connector.connect(**DB_CONFIG)
-            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn)
-            conn.close()
-            options = obj_df.to_dict('records')
-            fields[4] = html.Div([
-                html.Label("Тип объекта"),
-                dcc.Dropdown(id='dict-object-type-id', options=options, placeholder="Выберите тип объекта")
-            ])
-        # Кнопки Сохранить и Отмена
-        fields.append(html.Div([
-            html.Button('Сохранить', id='dict-save-btn'),
-            html.Button('Отмена', id='dict-cancel-btn', style={'margin-left': '10px'})
-        ]))
-        return html.Div(fields)
-
-    # --- Редактирование существующей записи ---
-    elif 'dict-edit' in triggered_prop and triggered['value']:
-        try:
-            props = json.loads(triggered_prop.split('.')[0])
-            table = props['table']
-            rec_id = props['id']
-        except (json.JSONDecodeError, KeyError):
-            return dash.no_update
-
-        columns_to_select = [pk, name_col]
-        if has_description:
-            columns_to_select.append("Description")
-        if has_object_type:
-            columns_to_select.append("Object_Type_ID")
-
-        conn = mysql.connector.connect(**DB_CONFIG)
-        df = pd.read_sql(
-            f"SELECT {', '.join(columns_to_select)} FROM {table} WHERE {pk} = %s AND Deleted = 0",
-            conn, params=(rec_id,)
-        )
-        conn.close()
-        if df.empty:
-            return html.Div("Запись не найдена")
-
-        row = df.iloc[0]
-        name = row[name_col]
-
-        children = [
-            dcc.Store(id='dict-edit-id', data={'table': table, 'id': rec_id, 'pk': pk}),
-            html.Label("Название"),
-            dcc.Input(id='dict-name-input', type='text', value=name),
-            html.Div([
-                html.Label("Описание"),
-                dcc.Textarea(
-                    id='dict-description-input',
-                    value=row.get('Description', '') if has_description else '',
-                    style={'width': '100%', 'height': 100}
-                )
-            ], style={'display': 'block' if has_description else 'none'}),
-            html.Div([
-                html.Label("Тип объекта"),
-                dcc.Dropdown(id='dict-object-type-id', placeholder="Выберите тип объекта")
-            ], style={'display': 'block' if has_object_type else 'none'}),
-        ]
-        if has_object_type:
-            current_obj_id = row.get('Object_Type_ID', None)
-            conn = mysql.connector.connect(**DB_CONFIG)
-            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn)
-            conn.close()
-            options = obj_df.to_dict('records')
-            children[4] = html.Div([
-                html.Label("Тип объекта"),
-                dcc.Dropdown(id='dict-object-type-id', options=options, value=current_obj_id)
-            ])
-
-        children.append(html.Div([
-            html.Button('Сохранить', id='dict-save-btn'),
-            html.Button('Отмена', id='dict-cancel-btn', style={'margin-left': '10px'})
-        ]))
-        return html.Div(children)
-
-    return dash.no_update
+##@app.callback(
+##    Output('dict-edit-form', 'children'),
+##    Input({'type': 'dict-edit', 'table': ALL, 'id': ALL}, 'n_clicks'),
+##    Input('dict-add-btn', 'n_clicks'),
+##    State('dict-type-select', 'value'),
+##    prevent_initial_call=True
+##)
+##def show_dict_edit_form(edit_clicks, add_clicks, table_name):
+##    ctx = callback_context
+##    if not ctx.triggered:
+##        return dash.no_update
+##
+##    triggered = ctx.triggered[0]
+##    triggered_prop = triggered['prop_id']
+##    pk, cols = get_table_info(table_name)
+##    name_col = 'Name' if 'Name' in cols else cols[1]
+##    has_description = 'Description' in cols
+##    has_object_type = 'Object_Type_ID' in cols and table_name.lower() != "object_types"
+##
+##    # --- Добавление новой записи ---
+##    if 'dict-add-btn' in triggered_prop and add_clicks:
+##        # Форма создания
+##        form_body = [
+##            dbc.Row([
+##                dbc.Col(dbc.Label("Название", html_for="dict-name-input"), width=12),
+##                dbc.Col(dbc.Input(id='dict-name-input', type='text', placeholder="Введите название", required=True), width=12),
+##            ], className="mb-3"),
+##        ]
+##        if has_description:
+##            form_body.append(dbc.Row([
+##                dbc.Col(dbc.Label("Описание", html_for="dict-description-input"), width=12),
+##                dbc.Col(dbc.Textarea(id='dict-description-input', style={'width': '100%', 'height': '100px'}, placeholder="Введите описание"), width=12),
+##            ], className="mb-3"))
+##        if has_object_type:
+##            conn_temp = mysql.connector.connect(**DB_CONFIG)
+##            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn_temp)
+##            conn_temp.close()
+##            options = obj_df.to_dict('records') if not obj_df.empty else []
+##            form_body.append(dbc.Row([
+##                dbc.Col(dbc.Label("Тип объекта", html_for="dict-object-type-id"), width=12),
+##                dbc.Col(dcc.Dropdown(id='dict-object-type-id', options=options, placeholder="Выберите тип объекта"), width=12),
+##            ], className="mb-3"))
+##        form_body.append(html.Div([
+##            dbc.Button("Сохранить", id='dict-save-btn', color="primary", className="me-2"),
+##            dbc.Button("Отмена", id='dict-cancel-btn', color="secondary"),
+##        ], className="mt-2"))
+##        return dbc.Card([
+##            dbc.CardHeader("Добавление новой записи"),
+##            dbc.CardBody(form_body)
+##        ])
+##
+##    # --- Редактирование существующей записи ---
+##    elif 'dict-edit' in triggered_prop and triggered['value']:
+##        try:
+##            props = json.loads(triggered_prop.split('.')[0])
+##            table = props['table']
+##            rec_id = props['id']
+##        except (json.JSONDecodeError, KeyError):
+##            return dash.no_update
+##
+##        columns_to_select = [pk, name_col]
+##        if has_description:
+##            columns_to_select.append("Description")
+##        if has_object_type:
+##            columns_to_select.append("Object_Type_ID")
+##
+##        conn = mysql.connector.connect(**DB_CONFIG)
+##        df = pd.read_sql(
+##            f"SELECT {', '.join(columns_to_select)} FROM {table} WHERE {pk} = %s AND Deleted = 0",
+##            conn, params=(rec_id,)
+##        )
+##        conn.close()
+##        if df.empty:
+##            return html.Div("Запись не найдена", className="alert alert-warning")
+##
+##        row = df.iloc[0]
+##        name = row[name_col]
+##        description = row.get('Description', '') if has_description else ''
+##        obj_type_id = row.get('Object_Type_ID') if has_object_type else None
+##
+##        form_body = [
+##            dcc.Store(id='dict-edit-id', data={'table': table, 'id': rec_id, 'pk': pk}),
+##            dbc.Row([
+##                dbc.Col(dbc.Label("Название", html_for="dict-name-input"), width=12),
+##                dbc.Col(dbc.Input(id='dict-name-input', type='text', value=name, required=True), width=12),
+##            ], className="mb-3"),
+##        ]
+##        if has_description:
+##            form_body.append(dbc.Row([
+##                dbc.Col(dbc.Label("Описание", html_for="dict-description-input"), width=12),
+##                dbc.Col(dbc.Textarea(id='dict-description-input', value=description, style={'width': '100%', 'height': '100px'}), width=12),
+##            ], className="mb-3"))
+##        if has_object_type:
+##            conn_temp = mysql.connector.connect(**DB_CONFIG)
+##            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn_temp)
+##            conn_temp.close()
+##            options = obj_df.to_dict('records') if not obj_df.empty else []
+##            form_body.append(dbc.Row([
+##                dbc.Col(dbc.Label("Тип объекта", html_for="dict-object-type-id"), width=12),
+##                dbc.Col(dcc.Dropdown(id='dict-object-type-id', options=options, value=obj_type_id, placeholder="Выберите тип объекта"), width=12),
+##            ], className="mb-3"))
+##        form_body.append(html.Div([
+##            dbc.Button("Сохранить", id='dict-save-btn', color="primary", className="me-2"),
+##            dbc.Button("Отмена", id='dict-cancel-btn', color="secondary"),
+##        ], className="mt-2"))
+##
+##        return dbc.Card([
+##            dbc.CardHeader("Редактирование записи"),
+##            dbc.CardBody(form_body)
+##        ])
+##
+##    return dash.no_update
 
 
-@app.callback(
-    Output('dict-edit-form', 'children', allow_duplicate=True),
-    Input('dict-cancel-btn', 'n_clicks'),
-    prevent_initial_call=True
-)
-def cancel_dict_edit(n_clicks):
-    """Очищает форму редактирования при нажатии Отмена."""
-    if n_clicks:
-        return html.Div()
-    return dash.no_update
+##@app.callback(
+##    Output('dict-edit-form', 'children', allow_duplicate=True),
+##    Input('dict-cancel-btn', 'n_clicks'),
+##    prevent_initial_call=True
+##)
+##def cancel_dict_edit(n_clicks):
+##    """Очищает форму редактирования при нажатии Отмена."""
+##    if n_clicks:
+##        return html.Div()
+##    return dash.no_update
 
 
-@app.callback(
-    Output('dict-list-container', 'children', allow_duplicate=True),
-    Output('dict-edit-form', 'children', allow_duplicate=True),
-    Input('dict-save-btn', 'n_clicks'),
-    State('dict-edit-id', 'data'),
-    State('dict-name-input', 'value'),
-    State('dict-description-input', 'value'),
-    State('dict-object-type-id', 'value'),
-    State('dict-type-select', 'value'),
-    prevent_initial_call=True
-)
-def save_dict_record(n_clicks, edit_data, name, description, object_type_id, table_name):
-    if not n_clicks or not name:
-        return dash.no_update, dash.no_update
 
-    pk, cols = get_table_info(table_name)
-    name_col = 'Name' if 'Name' in cols else cols[1]
-    has_description = 'Description' in cols
-    has_object_type = 'Object_Type_ID' in cols
 
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    try:
-        if edit_data:
-            set_parts = [f"{name_col} = %s"]
-            params = [name]
-            if has_description:
-                set_parts.append("Description = %s")
-                params.append(description)
-            if has_object_type:
-                set_parts.append("Object_Type_ID = %s")
-                params.append(object_type_id)
-            params.append(edit_data['id'])
-            cursor.execute(
-                f"UPDATE {table_name} SET {', '.join(set_parts)} WHERE {edit_data['pk']} = %s AND Deleted = 0",
-                params
-            )
-        else:
-            columns = [name_col]
-            placeholders = ["%s"]
-            params = [name]
-            if has_description:
-                columns.append("Description")
-                placeholders.append("%s")
-                params.append(description)
-            if has_object_type:
-                columns.append("Object_Type_ID")
-                placeholders.append("%s")
-                params.append(object_type_id)
-            columns.append("Deleted")
-            placeholders.append("0")
-            cursor.execute(
-                f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})",
-                params
-            )
-        conn.commit()
-    except Error as e:
-        return f"Ошибка сохранения: {e}", dash.no_update
-    finally:
-        conn.close()
-    # Обновляем список и очищаем форму
-    return load_dict_list(table_name), html.Div()
 
 @app.callback(
     Output('attraction-map-preview', 'figure'),
@@ -3155,25 +3309,37 @@ def select_end_location(choice):
     prevent_initial_call=True
 )
 def search_new_attr(query):
+    print(f"[DEBUG] Поиск: {query}")
     return _search_location(query)
 
 
 @app.callback(
-    Output('new-attr-search-coords', 'data'),
-    Output('new-attr-map-preview', 'figure', allow_duplicate=True),
-    Output('new-attr-lat', 'value', allow_duplicate=True),
-    Output('new-attr-lon', 'value', allow_duplicate=True),
+    Output('new-attr-temp-coords', 'data'),
     Input('new-attr-search-results', 'value'),
     prevent_initial_call=True
 )
-def select_new_attr_location(choice):
+def store_selected_coords(choice):
+    print(f"Выбрано (сохраняем в store): {choice}")  # для отладки
     if not choice:
-        raise PreventUpdate
+        return None
     lat, lon = map(float, choice.split(','))
-    return f"{lat},{lon}", _mini_map_figure(lat, lon, 'red'), round(lat, 7), round(lon, 7)
+    return {'lat': lat, 'lon': lon}
 
+@app.callback(
+    Output('new-attr-lat', 'value'),
+    Output('new-attr-lon', 'value'),
+    Output('new-attr-map-preview', 'figure'),
+    Input('new-attr-temp-coords', 'data'),
+    prevent_initial_call=True
+)
+def apply_selected_coords(coords):
+    if not coords:
+        raise PreventUpdate
+    lat = coords['lat']
+    lon = coords['lon']
+    print(f"Применяем координаты: {lat}, {lon}")  # для отладки
+    return round(lat, 7), round(lon, 7), _mini_map_figure(lat, lon, 'red')
 
-# ================== ИМПОРТ CSV (админка – вкладка "Загрузка CSV") ==================
 # ================== ИМПОРТ CSV (админка – вкладка "Загрузка CSV") ==================
 @app.callback(
     Output('csv-upload-status', 'children'),
