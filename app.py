@@ -1322,7 +1322,7 @@ def render_admin_tab(tab):
     Output('dict-modal-description', 'style'),
     Output('dict-modal-object-type-label', 'style'),
     Output('dict-modal-object-type', 'style'),
-    Output('dict-modal-object-type', 'options'),   # <-- новый выход
+    Output('dict-modal-object-type', 'options'),
     Input('dict-add-btn', 'n_clicks'),
     Input({'type': 'dict-edit', 'table': ALL, 'id': ALL}, 'n_clicks'),
     State('dict-type-select', 'value'),
@@ -1331,12 +1331,12 @@ def render_admin_tab(tab):
 def open_dict_modal(add_clicks, edit_clicks, table_name):
     ctx = callback_context
     if not ctx.triggered:
-        return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+        return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
     
     trig = ctx.triggered[0]['prop_id'].split('.')[0]
     
     # Добавление новой записи
-    if trig == 'dict-add-btn' and add_clicks:
+    if trig == 'dict-add-btn' and add_clicks and add_clicks > 0:
         has_description = 'Description' in get_table_info(table_name)[1]
         has_object_type = 'Object_Type_ID' in get_table_info(table_name)[1] and table_name.lower() != 'object_types'
         options = []
@@ -1350,29 +1350,52 @@ def open_dict_modal(add_clicks, edit_clicks, table_name):
                 {'display': 'block', 'width': '100%', 'height': '100px'} if has_description else {'display': 'none'},
                 {'display': 'block'} if has_object_type else {'display': 'none'},
                 {'display': 'block'} if has_object_type else {'display': 'none'},
-                options)   # <-- добавить options в конец
+                options)
     
     # Редактирование существующей записи
     if trig.startswith('{') and 'dict-edit' in trig:
+        # Находим, какая именно кнопка была нажата (не ALL)
+        triggered_value = ctx.triggered[0]['value']
+        if not triggered_value or triggered_value == 0:
+            # Не было реального клика
+            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
+        
         try:
             props = json.loads(trig)
             table = props['table']
             rec_id = props['id']
-        except:
-            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+        except Exception as e:
+            print(f"Ошибка парсинга props: {e}")
+            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
         
+        # Получаем информацию о таблице
         pk, cols = get_table_info(table)
         name_col = 'Name' if 'Name' in cols else cols[1]
         has_description = 'Description' in cols
-        has_object_type = 'Object_Type_ID' in cols
+        # Для Object_Types не должно быть поля "Тип объекта"
+        has_object_type = ('Object_Type_ID' in cols) and (table.lower() != 'object_types')
         
-        conn = mysql.connector.connect(**DB_CONFIG)
-        cursor = conn.cursor(dictionary=True)
-        cursor.execute(f"SELECT {pk}, {name_col}, Description, Object_Type_ID FROM {table} WHERE {pk} = %s AND Deleted = 0", (rec_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
+        # Динамически формируем список полей для SELECT
+        select_fields = [pk, name_col]
+        if has_description:
+            select_fields.append('Description')
+        if has_object_type:
+            select_fields.append('Object_Type_ID')
+        
+        conn = None
+        try:
+            conn = mysql.connector.connect(**DB_CONFIG)
+            cursor = conn.cursor(dictionary=True)
+            query = f"SELECT {', '.join(select_fields)} FROM {table} WHERE {pk} = %s AND Deleted = 0"
+            cursor.execute(query, (rec_id,))
+            row = cursor.fetchone()
+            conn.close()
+            if not row:
+                print(f"Запись {rec_id} не найдена в {table}")
+                return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
+        except Exception as e:
+            print(f"Ошибка при загрузке записи: {e}")
+            return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
         
         name = row[name_col]
         description = row.get('Description', '') if has_description else ''
@@ -1381,10 +1404,14 @@ def open_dict_modal(add_clicks, edit_clicks, table_name):
         # Загружаем опции для Object_Type_ID, если нужно
         options = []
         if has_object_type:
-            conn2 = mysql.connector.connect(**DB_CONFIG)
-            obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn2)
-            conn2.close()
-            options = obj_df.to_dict('records') if not obj_df.empty else []
+            try:
+                conn2 = mysql.connector.connect(**DB_CONFIG)
+                obj_df = pd.read_sql("SELECT Object_Type_ID AS value, Name AS label FROM Object_Types WHERE Deleted = 0", conn2)
+                conn2.close()
+                options = obj_df.to_dict('records') if not obj_df.empty else []
+            except Exception as e:
+                print(f"Ошибка загрузки Object_Types: {e}")
+                options = []
         
         return (True, f"Редактировать {table}", {'table': table, 'id': rec_id, 'pk': pk},
                 name, description, obj_type_id,
@@ -1392,10 +1419,9 @@ def open_dict_modal(add_clicks, edit_clicks, table_name):
                 {'display': 'block', 'width': '100%', 'height': '100px'} if has_description else {'display': 'none'},
                 {'display': 'block'} if has_object_type else {'display': 'none'},
                 {'display': 'block'} if has_object_type else {'display': 'none'},
-                options)   # <-- добавить options
+                options)
     
     return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, []
-    #return False, "", None, None, None, None, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}, {'display': 'none'}
 
 @app.callback(
     Output('dict-modal', 'is_open', allow_duplicate=True),
