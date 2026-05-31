@@ -39,3 +39,8 @@ DEBUG=False
 
 http://localhost:8050
 
+Доступ к админ панели:
+
+login: admin
+password: admin
+

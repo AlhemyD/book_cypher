@@ -50,28 +50,49 @@ def bring_address(cursor, admin_location):
 
 def find_admin_location(address_str, cursor):
     """
-    Ищет Admin_Location_ID по строке адреса 'Страна, Область, Район, Город'.
+    Ищет Admin_Location_ID по строке адреса 'Страна, Область, Район, Город, ...'
+    Позволяет пропускать верхние уровни (например, если страна не указана).
     Возвращает (admin_location_id, error_message).
-    Если не найден – error_message не None.
     """
     if not address_str:
         return None, "Пустая строка адреса."
+    
     parts = [p.strip() for p in address_str.split(',')]
     parent_id = None
+    current_level = 0
+    
     for i, part in enumerate(parts):
+        # Ищем запись с таким именем, у которой Parent_ID = parent_id
+        # Если не нашли, пробуем найти запись с таким именем без ограничения Parent_ID
         cursor.execute(
-            """SELECT Admin_Location_ID FROM Admin_Location
-               WHERE Name = %s AND (Parent_ID = %s OR (Parent_ID IS NULL AND %s IS NULL))
-                 """,
+            "SELECT Admin_Location_ID FROM Admin_Location WHERE LOWER(TRIM(Name)) = LOWER(TRIM(%s)) AND (Parent_ID = %s OR (%s IS NULL AND Parent_ID IS NULL))",
             (part, parent_id, parent_id)
         )
         row = cursor.fetchone()
-        if not row and parent_id == None:
-            return None, (f"Не найдено административное расположение: '{part}' "
-                          f"(уровень {i+1}) в адресе «{address_str}».")
-        elif not row:
-            return parent_id, None
+        
+        if not row and parent_id is not None:
+            # Если не нашли с точным parent_id, ищем запись с таким именем без проверки parent_id
+            cursor.execute(
+                "SELECT Admin_Location_ID FROM Admin_Location WHERE LOWER(TRIM(Name)) = LOWER(TRIM(%s))",
+                (part,)
+            )
+            row = cursor.fetchone()
+            if row:
+                # Нашли запись с таким именем, но с другим родителем – обновляем parent_id
+                parent_id = row['Admin_Location_ID']
+                current_level += 1
+                continue
+        
+        if not row:
+            # Если это последняя часть адреса (например, улица) и у нас уже есть parent_id, то игнорируем
+            if i == len(parts) - 1 and parent_id is not None:
+                break
+            print(f"Не найдено административное расположение: '{part}' (часть {i+1}) в адресе «{address_str}».")
+            return 1, None
+        
         parent_id = row['Admin_Location_ID']
+        current_level += 1
+    
     return parent_id, None
 
 def get_admin_location_options():
@@ -3382,14 +3403,38 @@ def process_csv_files(n_clicks, route_contents, route_filename,
         except (ValueError, TypeError):
             return default
 
+    def safe_b64decode(b64_string):
+        """Декодирует Base64 строку, добавляя padding при необходимости."""
+        # Удаляем возможные пробелы и символы новой строки
+        b64_string = b64_string.strip()
+        # Добавляем padding
+        missing_padding = len(b64_string) % 4
+        if missing_padding:
+            b64_string += '=' * (4 - missing_padding)
+        return base64.b64decode(b64_string)
+    
+    def decode_csv_bytes(raw_bytes):
+        """Пытается декодировать байты в строку, пробуя разные кодировки."""
+        encodings = ['utf-8-sig', 'utf-8', 'cp1251', 'windows-1251', 'latin-1']
+        for enc in encodings:
+            try:
+                return raw_bytes.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        # Если ничего не подошло, возвращаем с заменой ошибок
+        return raw_bytes.decode('utf-8', errors='replace')
+
     # Декодируем содержимое из base64
     try:
-        _, content_string = route_contents.split(',')
-        route_csv = base64.b64decode(content_string).decode('utf-8-sig')
-        _, content_string2 = attr_contents.split(',')
-        attr_csv = base64.b64decode(content_string2).decode('utf-8-sig')
-    except Exception:
-        return "Ошибка чтения файлов. Проверьте формат."
+        _, content_string = route_contents.split(',', 1)
+        route_csv = decode_csv_bytes(safe_b64decode(content_string))
+    except Exception as e:
+        return f"Ошибка чтения файла маршрута. Проверьте формат. {e}"
+    try:
+        _, content_string2 = attr_contents.split(',', 1)
+        attr_csv = decode_csv_bytes(safe_b64decode(content_string2))
+    except Exception as e:
+        return f"Ошибка чтения файла достопримечательности. Проверьте формат. {e}"
 
         # --- НАДЁЖНЫЙ ПАРСИНГ CSV С ПОДДЕРЖКОЙ ПУСТЫХ ПОЛЕЙ ---
     def parse_csv_to_dict(csv_content):
@@ -3471,8 +3516,12 @@ def process_csv_files(n_clicks, route_contents, route_filename,
             row = cursor.fetchone()
             if row:
                 return row[pk]
-            cursor.execute(f"INSERT INTO {table} ({name_col}) VALUES (%s)", (name_val,))
-            conn.commit()
+            try:
+                cursor.execute(f"INSERT INTO {table} ({name_col}) VALUES (%s)", (name_val,))
+                conn.commit()
+            except Exception as e:
+                print(f"Ошибка для table:{table} pk:{pk}, name_col:{name_col}, name_val:{name_val} в функции get_or_create_simple: {e}")
+                return None
             return cursor.lastrowid
 
         # --- Справочники маршрута (необязательные – если есть в файле) ---
